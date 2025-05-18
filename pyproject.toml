@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "collegium-serpentis"
+version = "0.1.0"
+description = "A real-time client status tracking system with WebSockets and Redis"
+authors = ["joe.fox <j.oefox@gmail.com>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "3.13.2"
+fastapi = "^0.115.12"
+uvicorn = {extras = ["standard"], version = "^0.34.2"}
+redis = {extras = ["hiredis"], version = "^5.0.0"}
+pydantic = "^2.5.0"
+python-dotenv = "^1.0.0"
+pytest = "^8.3.5"
+pytest-cov = "^6.1.1"
+pytest-asyncio = "^0.26.0"
+pytest-mock = "^3.14.0"
+pytest-xdist = "^3.6.1"
+flake8 = "^7.2.0"
+black = "^25.1.0"
+pre-commit = "^4.2.0"
+
+[tool.poetry.group.test.dependencies]
+httpx = "^0.25.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-vvv --cov=src --cov-report=term-missing"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
