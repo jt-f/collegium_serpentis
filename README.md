@@ -11,7 +11,7 @@ A real-time client registry and status management system built with FastAPI and 
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.13.2
 - Poetry (for dependency management)
 - Redis server (for production)
 
@@ -25,12 +25,12 @@ A real-time client registry and status management system built with FastAPI and 
 
 2. Install dependencies:
    ```bash
-   poetry install
+   poetry install --no-root
    ```
 
 3. (Optional) Install development dependencies:
    ```bash
-   poetry install --with dev
+   poetry install --with dev --no-root
    ```
 
 4. (Optional) Configure Poetry to use a virtual environment in the project directory:
@@ -43,15 +43,60 @@ poetry config virtualenvs.in-project true
    poetry run pre-commit install
    ```
 
+6. Install redis tools
+```bash
+sudo apt install redis-tools
+```
+
 ## Usage
 
 ### Starting the Server
 
 ```bash
-poetry run uvicorn src.server:app --reload
+poetry run uvicorn src.server.server:app --reload
 ```
 
 This will start the server at `http://localhost:8000` with auto-reload enabled for development.
+
+### starting redis server
+```bash
+docker run --rm --name redis-server -p 6379:6379 redis
+```
+test the server status
+```bash
+redis-cli ping
+```
+expected result
+```bash
+PONG
+```
+
+#### stopping redis container
+```bash
+docker stop redis-server
+```
+
+#### removing redis container
+```bash
+docker rm redis-server
+```
+
+### Using Docker Compose
+
+To start both the FastAPI server and Redis together:
+
+```bash
+docker compose up --build
+```
+
+- The server will be available at `http://localhost:8000`
+- Redis will be available at `localhost:6379`
+
+To stop the services:
+
+```bash
+docker compose down
+```
 
 ### API Documentation
 

@@ -1,0 +1,8 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+You refactor python code, following SOLID and DRY principles. 
+
+You don't over-optimise, but you do look for opportunities to make the code easier to read. 

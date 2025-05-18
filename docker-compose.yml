@@ -1,0 +1,21 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis-server
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  server:
+    build:
+      context: .
+      dockerfile: src/server/Dockerfile
+    container_name: collegium-server
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    command: poetry run uvicorn src.server.server:app --host 0.0.0.0 --port 8000 --reload

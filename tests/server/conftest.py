@@ -2,7 +2,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
-from src.server import app as fastapi_app
+from src.server.server import app as fastapi_app
+from typing import Generator
 
 
 @pytest.fixture(scope="module")
@@ -18,7 +19,7 @@ def test_client(test_app: FastAPI) -> TestClient:
 
 
 @pytest.fixture
-def mock_redis() -> AsyncMock:
+def mock_redis() -> Generator[AsyncMock, None, None]:
     """Create a mock Redis client."""
     with patch("src.server.redis_client", new_callable=AsyncMock) as mock:
         mock.hset = AsyncMock()
@@ -29,5 +30,5 @@ def mock_redis() -> AsyncMock:
 
 @pytest.fixture
 def websocket_client(test_client: TestClient) -> TestClient:
-    """Create a WebSocket test client."""
+    """Create a WebSocket test client to the test FastAPI application."""
     return test_client
