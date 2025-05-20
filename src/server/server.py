@@ -5,6 +5,8 @@ from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import redis
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.shared.utils.logging import get_logger
 from src.shared.utils.config import REDIS_CONFIG
@@ -60,6 +62,9 @@ redis_client = redis.asyncio.Redis(**REDIS_CONFIG)
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
+
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="src/server/static"), name="static")
 
 # Dictionary to keep track of active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
@@ -225,3 +230,9 @@ async def get_all_statuses() -> Dict[str, Any]:
             "clients": statuses,
             "error": str(e),
         }
+
+
+@app.get("/")
+async def get_status_page():
+    """Serves the status display HTML page."""
+    return FileResponse("src/server/static/status_display.html")

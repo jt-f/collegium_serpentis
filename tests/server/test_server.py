@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import WebSocketDisconnect
 import redis
+from .conftest import AsyncIteratorWrapper, ErringAsyncIterator
 
 
 class TestWebSocketServer:
@@ -72,10 +73,10 @@ class TestWebSocketServer:
             )
 
             # Connection should be in active_connections
-            assert test_client_id in websocket.app.state.active_connections
+            assert test_client_id in websocket.app.active_connections
 
         # After disconnecting, should be removed from active_connections
-        assert test_client_id not in websocket.app.state.active_connections
+        assert test_client_id not in websocket.app.active_connections
 
     @pytest.mark.asyncio
     async def test_get_all_statuses_endpoint_redis_connected(
@@ -83,15 +84,15 @@ class TestWebSocketServer:
     ):
         """Test the /statuses endpoint when Redis is connected."""
         # Set Redis status to connected
-        from src.server import status_store
+        from src.server.server import status_store
 
         monkeypatch.setitem(status_store, "redis", "connected")
 
         # Mock Redis scan and hgetall responses
-        mock_redis.scan_iter.return_value = [
+        mock_redis.scan_iter.return_value = AsyncIteratorWrapper([
             b"client:test1:status",
             b"client:test2:status",
-        ]
+        ])
         mock_redis.hgetall.side_effect = [
             {b"status": b"online", b"cpu": b"50%"},
             {b"status": b"offline"},
@@ -120,7 +121,7 @@ class TestWebSocketServer:
     ):
         """Test the /statuses endpoint when Redis is unavailable."""
         # Set Redis status to unavailable
-        from src.server import status_store
+        from src.server.server import status_store
 
         monkeypatch.setitem(status_store, "redis", "unavailable")
 
@@ -144,12 +145,12 @@ class TestWebSocketServer:
     ):
         """Test the /statuses endpoint when Redis throws an error."""
         # Set Redis status to connected
-        from src.server import status_store
+        from src.server.server import status_store
 
         monkeypatch.setitem(status_store, "redis", "connected")
 
-        # Mock Redis to raise an exception
-        mock_redis.scan_iter.side_effect = redis.RedisError("Test Redis error")
+        # Mock Redis to raise an exception during iteration
+        mock_redis.scan_iter.return_value = ErringAsyncIterator(redis.RedisError("Test Redis error"))
 
         response = test_client.get("/statuses")
         assert response.status_code == 200
@@ -167,7 +168,7 @@ class TestWebSocketServer:
     @pytest.mark.asyncio
     async def test_startup_event_redis_available(self, monkeypatch):
         """Test startup event when Redis is available."""
-        from src.server import startup_event, status_store
+        from src.server.server import startup_event, status_store
 
         # Mock Redis ping to succeed
         mock_redis = AsyncMock()
@@ -189,7 +190,7 @@ class TestWebSocketServer:
     @pytest.mark.asyncio
     async def test_startup_event_redis_unavailable(self, monkeypatch):
         """Test startup event when Redis is unavailable."""
-        from src.server import startup_event, status_store
+        from src.server.server import startup_event, status_store
 
         # Mock Redis ping to fail
         mock_redis = AsyncMock()
@@ -213,7 +214,7 @@ class TestWebSocketServer:
     @pytest.mark.asyncio
     async def test_startup_event_redis_unknown_error(self, monkeypatch, caplog):
         """Test startup event when Redis throws an unknown error."""
-        from src.server import lifespan, status_store
+        from src.server.server import lifespan, status_store
 
         # Mock Redis ping to raise a generic Exception
         mock_redis = AsyncMock()
@@ -238,7 +239,7 @@ class TestWebSocketServer:
     @pytest.mark.asyncio
     async def test_redis_reconnector(self, monkeypatch):
         """Test the Redis reconnector background task."""
-        from src.server import redis_reconnector, status_store
+        from src.server.server import redis_reconnector, status_store
 
         # Set up mocks
         mock_sleep = AsyncMock()
@@ -340,3 +341,18 @@ class TestWebSocketServer:
             mock_redis.hset.assert_any_await(
                 f"client:{client_id}:status", mapping={"status": "online"}
             )
+
+def test_serve_status_dashboard_html(test_client):
+    response = test_client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    # It's good practice to check for a unique piece of content
+    assert "<title>Client Status Dashboard</title>" in response.text
+    assert "<h1>Client Status Dashboard</h1>" in response.text # Another check
+
+def test_serve_static_files(test_client):
+    response = test_client.get("/static/status_display.html")
+    assert response.status_code == 200
+    assert "text/html; charset=utf-8" in response.headers["content-type"]
+    # Check for the same unique content as the root path
+    assert "<title>Client Status Dashboard</title>" in response.text
