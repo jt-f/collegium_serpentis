@@ -113,8 +113,13 @@ ws://localhost:8000/ws
 ```
 
 ## Testing
-
-poetry run pytest -s -vvv --cov=src
+```bash
+poetry run pytest -s -vvv --cov-report term-missing --cov=src tests/
+```
+running a single test
+```bash
+poetry run pytest -s -vvv --cov-report term-missing tests/server/test_server.py::TestWebSocketServer::test_websocket_connection
+```
 
 ## Development
 
