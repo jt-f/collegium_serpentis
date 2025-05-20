@@ -1,9 +1,9 @@
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock # Added MagicMock
 from src.server.server import app as fastapi_app
-from typing import Generator, Any # Added Any
+from typing import Generator, Any
 import redis # Added redis
 
 
@@ -24,7 +24,7 @@ def mock_redis() -> Generator[AsyncMock, None, None]:
     """Create a mock Redis client."""
     with patch("src.server.server.redis_client", new_callable=AsyncMock) as mock:
         mock.hset = AsyncMock()
-        mock.scan_iter = AsyncMock()
+        mock.scan_iter = MagicMock() # Changed from AsyncMock
         mock.hgetall = AsyncMock()
         yield mock
 

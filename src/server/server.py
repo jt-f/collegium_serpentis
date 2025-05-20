@@ -125,6 +125,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_text(
                         json.dumps({"error": "client_id is required"})
                     )
+                    await websocket.close() # Added
                     break
 
                 if client_id not in active_connections:
@@ -160,6 +161,8 @@ async def websocket_endpoint(websocket: WebSocket):
             except json.JSONDecodeError as e:
                 logger.error("Invalid JSON received", error=str(e), data=data)
                 await websocket.send_text(json.dumps({"error": "Invalid JSON format"}))
+                await websocket.close()
+                break
             except Exception as e:
                 logger.error(
                     "Error processing message",
