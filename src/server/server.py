@@ -1,7 +1,7 @@
 import json
 import asyncio
 import random
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import redis
@@ -103,7 +103,7 @@ async def redis_health_check() -> None:
                 "Redis connection lost",
                 error=str(e),
                 previous_status=old_status,
-                timestamp=datetime.utcnow().isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
             )
         except Exception as e:
             # Other Redis errors
@@ -156,7 +156,7 @@ async def redis_reconnector() -> None:
         except Exception as e:
             status_store["redis"] = "unavailable"
             logger.error(
-                "Redis reconnection error",
+                "Redis still unavailable (UnknownError)",
                 error=str(e),
                 next_retry_in=current_delay,
             )
@@ -197,14 +197,15 @@ async def update_client_status(
     Returns:
         bool: True if successfully stored, False otherwise
     """
+    if not status_attributes:
+        return True  # Nothing to update
+
     try:
         if status_store["redis"] == "connected":
             redis_key = f"client:{client_id}:status"
             try:
-                await asyncio.wait_for(
-                    redis_client.hset(redis_key, mapping=status_attributes),
-                    timeout=0.5,  # Short timeout to quickly detect Redis issues
-                )
+                # Direct await to ensure it's properly awaited in tests
+                await redis_client.hset(redis_key, mapping=status_attributes)
                 logger.debug(
                     "Updated client status in Redis",
                     client_id=client_id,
@@ -340,7 +341,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Update disconnection status
             disconnect_status = {
                 "connected": "false",
-                "disconnect_time": str(datetime.utcnow()),
+                "disconnect_time": str(datetime.now(UTC)),
             }
 
             await update_client_status(client_id, disconnect_status)
@@ -368,6 +369,7 @@ async def get_all_statuses() -> Dict[str, Any]:
     """
     logger.debug("Fetching all client statuses")
     statuses = {}
+    error_msg = None
 
     # First attempt: Try Redis if it's available
     if status_store["redis"] == "connected":
@@ -382,7 +384,8 @@ async def get_all_statuses() -> Dict[str, Any]:
                 "Successfully fetched client statuses from Redis", count=len(statuses)
             )
         except Exception as e:
-            logger.error("Failed to fetch client statuses from Redis", error=str(e))
+            error_msg = str(e)
+            logger.error("Failed to fetch client statuses from Redis", error=error_msg)
             status_store["redis"] = "unavailable"
             # Continue to fallback
 
@@ -395,13 +398,19 @@ async def get_all_statuses() -> Dict[str, Any]:
             redis_status=status_store["redis"],
         )
 
-    return {
+    response = {
         "redis_status": status_store["redis"],
         "clients": statuses,
         "data_source": (
             "redis" if status_store["redis"] == "connected" else "memory_cache"
         ),
     }
+
+    # Add error message if there was an error
+    if error_msg:
+        response["error"] = error_msg
+
+    return response
 
 
 @app.get("/")

@@ -1,10 +1,9 @@
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, patch, MagicMock # Added MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock  # Added MagicMock
 from src.server.server import app as fastapi_app
 from typing import Generator, Any
-import redis # Added redis
 
 
 @pytest.fixture(scope="module")
@@ -23,9 +22,12 @@ def test_client(test_app: FastAPI) -> TestClient:
 def mock_redis() -> Generator[AsyncMock, None, None]:
     """Create a mock Redis client."""
     with patch("src.server.server.redis_client", new_callable=AsyncMock) as mock:
-        mock.hset = AsyncMock()
-        mock.scan_iter = MagicMock() # Changed from AsyncMock
+        # Configure hset to return a value (typically the number of fields updated)
+        mock.hset = AsyncMock(return_value=1)
+        mock.scan_iter = MagicMock()  # Changed from AsyncMock
         mock.hgetall = AsyncMock()
+        # Configure ping to succeed by default
+        mock.ping = AsyncMock(return_value=True)
         yield mock
 
 
@@ -34,9 +36,10 @@ def websocket_client(test_client: TestClient) -> TestClient:
     """Create a WebSocket test client to the test FastAPI application."""
     return test_client
 
+
 # Helper classes start here
 class AsyncIteratorWrapper:
-    def __init__(self, items: list[Any]): # Used Any for items
+    def __init__(self, items: list[Any]):  # Used Any for items
         self.items = items
         self.iter_items = iter(self.items)
 
@@ -49,8 +52,9 @@ class AsyncIteratorWrapper:
         except StopIteration:
             raise StopAsyncIteration
 
+
 class ErringAsyncIterator:
-    def __init__(self, error_to_raise: Exception): # Used Exception for error_to_raise
+    def __init__(self, error_to_raise: Exception):  # Used Exception for error_to_raise
         self.error_to_raise = error_to_raise
         self.called = False
 
@@ -61,7 +65,9 @@ class ErringAsyncIterator:
         if not self.called:
             self.called = True
             # Ensure the error is an instance if it's a type
-            if isinstance(self.error_to_raise, type) and issubclass(self.error_to_raise, Exception):
+            if isinstance(self.error_to_raise, type) and issubclass(
+                self.error_to_raise, Exception
+            ):
                 raise self.error_to_raise()
             raise self.error_to_raise
         raise StopAsyncIteration
