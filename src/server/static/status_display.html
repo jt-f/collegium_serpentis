@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client Status Dashboard</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+            background-color: #f9f9f9;
+            color: #333;
+        }
+        h1, h2 {
+            color: #333;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 5px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #e9e9e9;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        tr:hover {
+            background-color: #e6e6e6;
+        }
+        #redis-status {
+            font-weight: bold;
+            padding: 5px;
+            border-radius: 4px;
+        }
+        /* Style for connected Redis */
+        #redis-status.connected {
+            background-color: #d4edda; /* Light green */
+            color: #155724; /* Dark green */
+        }
+        /* Style for disconnected or error state for Redis */
+        #redis-status.unavailable, #redis-status.unknown, #redis-status.error {
+            background-color: #f8d7da; /* Light red */
+            color: #721c24; /* Dark red */
+        }
+        .status-connected {
+            color: green;
+            font-weight: bold;
+        }
+        .status-disconnected {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Client Status Dashboard</h1>
+    
+    <h2>System Status</h2>
+    <p>Redis Connection: <span id="redis-status">Unknown</span></p>
+    
+    <h2>Connected Clients</h2>
+    <table id="clients-table">
+        <thead>
+            <tr>
+                <th>Client ID</th>
+                <th>Connection Status</th>
+                <th>Last Seen / Disconnect Time</th>
+                <th>Other Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Client data will be populated here by JavaScript -->
+        </tbody>
+    </table>
+
+    <script>
+        const redisStatusElement = document.getElementById('redis-status');
+        const clientsTableBody = document.querySelector('#clients-table tbody');
+
+        async function fetchStatuses() {
+            try {
+                const response = await fetch('/statuses');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                updateDashboard(data);
+            } catch (error) {
+                console.error("Failed to fetch statuses:", error);
+                redisStatusElement.textContent = "Error fetching data";
+                clientsTableBody.innerHTML = '<tr><td colspan="4">Error fetching client data.</td></tr>';
+            }
+        }
+
+        function updateDashboard(data) {
+            // Update Redis status
+            const redisStatus = data.redis_status || "unknown";
+            redisStatusElement.textContent = redisStatus.charAt(0).toUpperCase() + redisStatus.slice(1);
+            redisStatusElement.className = ''; // Reset classes
+            redisStatusElement.classList.add(redisStatus.toLowerCase());
+
+            // Clear existing client rows
+            clientsTableBody.innerHTML = '';
+
+            if (data.clients && Object.keys(data.clients).length > 0) {
+                for (const clientId in data.clients) {
+                    const client = data.clients[clientId];
+                    const row = clientsTableBody.insertRow();
+                    
+                    const cellId = row.insertCell();
+                    cellId.textContent = clientId;
+
+                    const cellConnectionStatus = row.insertCell();
+                    const isConnected = client.connected === 'true' || client.connected === true;
+                    cellConnectionStatus.textContent = isConnected ? "Connected" : "Disconnected";
+                    cellConnectionStatus.className = isConnected ? 'status-connected' : 'status-disconnected';
+
+                    const cellLastSeen = row.insertCell();
+                    cellLastSeen.textContent = isConnected ? (client.last_seen || "N/A") : (client.disconnect_time || "N/A");
+                    
+                    const cellDetails = row.insertCell();
+                    const details = [];
+                    for (const key in client) {
+                        if (key !== 'connected' && key !== 'disconnect_time' && key !== 'last_seen') {
+                            details.push(`${key}: ${client[key]}`);
+                        }
+                    }
+                    cellDetails.textContent = details.join(', ') || "No additional details";
+                }
+            } else {
+                clientsTableBody.innerHTML = '<tr><td colspan="4">No clients connected or reporting.</td></tr>';
+            }
+        }
+
+        // Fetch statuses on initial load
+        fetchStatuses();
+
+        // Refresh statuses every 5 seconds
+        setInterval(fetchStatuses, 5000);
+    </script>
+</body>
+</html>

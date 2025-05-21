@@ -114,7 +114,14 @@ ws://localhost:8000/ws
 
 ## Testing
 
-poetry run pytest -s -vvv --cov=src
+
+```bash
+poetry run pytest -s -vvv --cov-report term-missing --cov=src tests/
+```
+running a single test
+```bash
+poetry run pytest -s -vvv --cov-report term-missing tests/server/test_server.py::TestWebSocketServer::test_websocket_connection
+```
 
 ## Development
 
@@ -135,3 +142,17 @@ poetry run pre-commit run --all-files
 ## License
 
 MIT License
+
+## Client Status Dashboard
+
+A web interface is available to view the status of connected clients and the Redis service.
+
+Once the server is running (e.g., via `docker-compose up`), you can access the dashboard by navigating to:
+
+[http://localhost:8000/](http://localhost:8000/)
+
+The dashboard displays:
+- The connection status of the Redis server.
+- A list of clients, including their ID, connection status (Connected/Disconnected), last seen time (for connected clients), or disconnect time (for disconnected clients).
+- Other status details provided by the clients.
+- The information on the dashboard automatically refreshes every 5 seconds.
