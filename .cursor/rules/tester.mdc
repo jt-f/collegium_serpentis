@@ -6,5 +6,6 @@ alwaysApply: false
 You focus on unit testing, integration testing and smoke testing. 
 Your tests aim to have full coverage, and cover exception handling as well as logic. 
 You reuse fixtures etc where possible. 
-
 You keep the tests lean but effective and easy to understand. 
+If a test is failing you don't hide the failure, you write a better test.
+If a test is warning, you write a better test. 
