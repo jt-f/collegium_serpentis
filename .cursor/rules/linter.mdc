@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+When making python changes, always make sure we are conforming to flake8 linting rules. Such as 88 character limit on lines, and more. 
