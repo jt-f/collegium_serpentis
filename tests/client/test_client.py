@@ -249,14 +249,68 @@ class TestCommandListener(unittest.IsolatedAsyncioTestCase):
 
         with patch("builtins.print") as mock_print:
             await client.listen_for_commands(mock_websocket)
-            message = (
+
+            # Expected print call for unknown command
+            expected_msg = (
                 f"Client {client.CLIENT_ID}: "
                 f"Unknown command received: unknown_command"
             )
-            mock_print.assert_called_with(message)
+            mock_print.assert_any_call(expected_msg)
+
+    async def test_error_processing_message_after_json_decode(self):
+        """Test error handling when an exception occurs after JSON decoding
+        but during command processing logic."""
+        # This message will be successfully decoded by json.loads
+        # but we will mock the command handling part to raise an exception.
+        # Use a known command like "pause" to ensure send_status_message is called.
+        client.is_paused = False  # Ensured by setUp, but explicit for clarity
+        problematic_message_dict = {"command": "pause"}  # Changed from "cause_error"
+        problematic_message_json = json.dumps(problematic_message_dict)
+
+        mock_websocket = self.mock_websocket_with_messages([problematic_message_json])
+
+        # Mock the part of the code that processes the command after json.loads
+        # to simulate an error during command handling.
+        # For the "pause" command, send_status_message is called.
+        # We patch send_status_message to raise an exception.
+
+        simulated_error_text = (
+            "Simulated error during pause command processing"  # Changed
+        )
+
+        # We need to patch where 'send_status_message' is LOOKED UP from,
+        # which is 'src.client.client.send_status_message'
+        with patch(
+            "src.client.client.send_status_message",
+            side_effect=Exception(simulated_error_text),
+        ), patch("builtins.print") as mock_print:
+
+            # We expect listen_for_commands to catch the exception and continue
+            # processing (or in this case, finish as it's the only message)
+            await client.listen_for_commands(mock_websocket)
+
+            # Check that the specific error message was printed
+            expected_error_print = (
+                f"Client {client.CLIENT_ID}: Error processing message: "
+                f"{simulated_error_text}"
+            )
+            # Also, the "Received command" print should have occurred
+            expected_receipt_print = (
+                f"Client {client.CLIENT_ID}: Received command: pause"
+            )
+            # And the "Paused command received" print
+            expected_pause_ack_print = (
+                f"Client {client.CLIENT_ID}: Paused command received. "
+                f"Halting status updates."
+            )
+
+            actual_calls = [call_args[0][0] for call_args in mock_print.call_args_list]
+            self.assertIn(expected_receipt_print, actual_calls)
+            self.assertIn(expected_pause_ack_print, actual_calls)
+            self.assertIn(expected_error_print, actual_calls)
 
     async def test_non_command_message(self):
-        """Test handling of non-command messages."""
+        """Test that messages without a 'command' field are handled."""
         non_command_message = {"some_field": "some_value"}
 
         mock_websocket = self.mock_websocket_with_messages(
@@ -330,6 +384,36 @@ class TestCommandListener(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ConnectionClosed):
             await client.listen_for_commands(mock_websocket)
+
+    async def test_listen_for_commands_unexpected_error_in_iterator(self):
+        """Test that an unexpected error during message iteration is handled."""
+        mock_websocket = AsyncMock()
+        error_message = "Simulated iterator error"
+
+        # Create an async iterator that raises an unexpected exception
+        class FaultyAsyncIter:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise Exception(error_message)
+
+        mock_websocket.__aiter__ = lambda self: FaultyAsyncIter()
+
+        with patch("builtins.print") as mock_print, self.assertRaises(
+            Exception
+        ) as context_manager:
+            await client.listen_for_commands(mock_websocket)
+
+        # Check that the error message was printed
+        expected_print = (
+            f"Client {client.CLIENT_ID}: Unexpected error in command listener: "
+            f"{error_message}"
+        )
+        mock_print.assert_called_with(expected_print)
+
+        # Check that the original exception was re-raised
+        self.assertEqual(str(context_manager.exception), error_message)
 
 
 class TestPeriodicStatusSender(unittest.IsolatedAsyncioTestCase):
