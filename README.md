@@ -156,3 +156,45 @@ The dashboard displays:
 - A list of clients, including their ID, connection status (Connected/Disconnected), last seen time (for connected clients), or disconnect time (for disconnected clients).
 - Other status details provided by the clients.
 - The information on the dashboard automatically refreshes every 5 seconds.
+
+## Running the Client Standalone
+
+### Running with Poetry
+
+To run the client with default settings:
+
+```bash
+poetry run python src/client/client.py
+```
+
+### Configuration Options
+
+The client can be configured using environment variables:
+
+- `SERVER_URL`: WebSocket server URL (default: `ws://localhost:8000/ws`)
+- `STATUS_INTERVAL`: Time between status updates in seconds (default: `10`)
+- `RECONNECT_DELAY`: Delay before reconnection attempts in seconds (default: `5`)
+
+Example with custom settings:
+
+```bash
+SERVER_URL=ws://myserver.example.com:8000/ws STATUS_INTERVAL=5 RECONNECT_DELAY=3 poetry run python src/client/client.py
+```
+
+### Docker (Standalone)
+
+To build and run the client using Docker without docker-compose:
+
+```bash
+# Build the Docker image
+docker build -t collegium-client -f src/client/Dockerfile .
+
+# Run the container
+docker run -d --name collegium-client \
+  -e SERVER_URL=ws://your-server-address:8000/ws \
+  -e STATUS_INTERVAL=10 \
+  -e RECONNECT_DELAY=5 \
+  collegium-client
+```
+
+Replace `your-server-address` with the actual address of your server.

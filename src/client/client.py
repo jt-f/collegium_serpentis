@@ -2,14 +2,16 @@ import asyncio
 import json
 import uuid
 import random
+import os
 from datetime import datetime, timezone
 
 import websockets
 
-SERVER_URL = "ws://server:8000/ws"  # Updated to connect to the server service
+# Get server URL from environment or use default
+SERVER_URL = os.getenv("SERVER_URL", "ws://localhost:8000/ws")
 CLIENT_ID = str(uuid.uuid4())
-STATUS_INTERVAL = 10  # seconds
-RECONNECT_DELAY = 5  # seconds
+STATUS_INTERVAL = int(os.getenv("STATUS_INTERVAL", "10"))  # seconds
+RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", "5"))  # seconds
 
 
 async def send_status_update(websocket):
@@ -27,7 +29,8 @@ async def send_status_update(websocket):
 
 
 async def connect_and_send_updates():
-    """Connects to the server, sends periodic status updates, and handles reconnection."""
+    """Connects to the server, sends periodic status updates,
+    and handles reconnection."""
     while True:
         try:
             async with websockets.connect(SERVER_URL) as websocket:
@@ -48,4 +51,7 @@ async def connect_and_send_updates():
 
 if __name__ == "__main__":
     print(f"Starting client with ID: {CLIENT_ID}")
+    print(f"Using server URL: {SERVER_URL}")
+    print(f"Status update interval: {STATUS_INTERVAL} seconds")
+    print(f"Reconnect delay: {RECONNECT_DELAY} seconds")
     asyncio.run(connect_and_send_updates())
