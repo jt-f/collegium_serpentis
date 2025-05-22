@@ -6,59 +6,93 @@
     <title>Client Status Dashboard</title>
     <style>
         body {
-            font-family: sans-serif;
+            font-family: 'Courier New', Courier, monospace;
             margin: 20px;
-            background-color: #f9f9f9;
-            color: #333;
+            background-color: #1a1a1a; /* Very dark grey */
+            color: #e0e0e0; /* Light grey */
         }
         h1, h2 {
-            color: #333;
-            border-bottom: 2px solid #eee;
+            color: #00ff00; /* Console green */
+            border-bottom: 2px solid #00ff00; /* Console green */
             padding-bottom: 5px;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 15px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px rgba(0, 255, 0, 0.3); /* Glowing green effect */
         }
         th, td {
-            border: 1px solid #ddd;
+            border: 1px solid #00ff00; /* Console green */
             padding: 12px;
             text-align: left;
+            vertical-align: top; /* Align content to the top for the detailed list */
         }
         th {
-            background-color: #e9e9e9;
+            background-color: #0a0a0a; /* Almost black */
+            color: #00ff00; /* Console green */
             font-weight: bold;
         }
         tr:nth-child(even) {
-            background-color: #f2f2f2;
+            background-color: #2a2a2a; /* Dark grey */
         }
         tr:hover {
-            background-color: #e6e6e6;
+            background-color: #3a3a3a; /* Slightly lighter dark grey */
         }
         #redis-status {
             font-weight: bold;
             padding: 5px;
             border-radius: 4px;
+            border: 1px solid; /* Base border, color will be set by status */
         }
-        /* Style for connected Redis */
         #redis-status.connected {
-            background-color: #d4edda; /* Light green */
-            color: #155724; /* Dark green */
+            background-color: #003300; /* Dark green background */
+            color: #00ff00; /* Console green text */
+            border-color: #00ff00; /* Console green border */
         }
-        /* Style for disconnected or error state for Redis */
         #redis-status.unavailable, #redis-status.unknown, #redis-status.error {
-            background-color: #f8d7da; /* Light red */
-            color: #721c24; /* Dark red */
+            background-color: #330000; /* Dark red background */
+            color: #ff0000; /* Bright red text */
+            border-color: #ff0000; /* Bright red border */
         }
         .status-connected {
-            color: green;
+            color: #00ff00; /* Console green */
             font-weight: bold;
         }
         .status-disconnected {
-            color: red;
+            color: #ff0000; /* Bright red */
             font-weight: bold;
+        }
+        .detail-item {
+            margin-bottom: 4px;
+            word-break: break-all;
+        }
+        .detail-item .key {
+            font-weight: bold;
+            color: #7fffd4; /* Aquamarine */
+        }
+        .detail-item .value {
+            color: #e0e0e0;
+        }
+        /* Button Styles */
+        .action-button {
+            background-color: #005500; /* Darker green */
+            color: #00ff00; /* Console green */
+            border: 1px solid #00ff00;
+            padding: 5px 10px;
+            margin-right: 5px;
+            cursor: pointer;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .action-button:hover {
+            background-color: #008800; /* Brighter green on hover */
+        }
+        .action-button:disabled {
+            background-color: #333;
+            color: #777;
+            border-color: #555;
+            opacity: 0.5;
+            cursor: not-allowed;
         }
     </style>
 </head>
@@ -75,7 +109,8 @@
                 <th>Client ID</th>
                 <th>Connection Status</th>
                 <th>Last Seen / Disconnect Time</th>
-                <th>Other Details</th>
+                <th>Detailed Status</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -86,6 +121,31 @@
     <script>
         const redisStatusElement = document.getElementById('redis-status');
         const clientsTableBody = document.querySelector('#clients-table tbody');
+
+        async function handleClientAction(clientId, action) {
+            const url = `/clients/${clientId}/${action}`;
+            let actionVerb = action.charAt(0).toUpperCase() + action.slice(1);
+            if (action === 'disconnect') actionVerb = 'Disconnecting';
+
+            console.log(`${actionVerb} client ${clientId}...`);
+            try {
+                const response = await fetch(url, { method: 'POST' });
+                const result = await response.json(); // Try to parse JSON, but handle if not
+
+                if (response.ok) {
+                    alert(`Successfully ${action}ed client ${clientId}: ${result.message}`);
+                    console.log(`Action ${action} successful for ${clientId}:`, result);
+                } else {
+                    alert(`Failed to ${action} client ${clientId}: ${result.detail || response.statusText}`);
+                    console.error(`Action ${action} failed for ${clientId}:`, result);
+                }
+            } catch (error) {
+                alert(`Error during ${action} for client ${clientId}: ${error.message}`);
+                console.error(`Error during ${action} for ${clientId}:`, error);
+            } finally {
+                fetchStatuses(); // Refresh dashboard regardless of outcome
+            }
+        }
 
         async function fetchStatuses() {
             try {
@@ -98,27 +158,25 @@
             } catch (error) {
                 console.error("Failed to fetch statuses:", error);
                 redisStatusElement.textContent = "Error fetching data";
-                clientsTableBody.innerHTML = '<tr><td colspan="4">Error fetching client data.</td></tr>';
+                clientsTableBody.innerHTML = '<tr><td colspan="5">Error fetching client data.</td></tr>';
             }
         }
 
         function updateDashboard(data) {
-            // Update Redis status
             const redisStatus = data.redis_status || "unknown";
             redisStatusElement.textContent = redisStatus.charAt(0).toUpperCase() + redisStatus.slice(1);
-            redisStatusElement.className = ''; // Reset classes
+            redisStatusElement.className = ''; 
             redisStatusElement.classList.add(redisStatus.toLowerCase());
 
-            // Clear existing client rows
             clientsTableBody.innerHTML = '';
+            const fixedAttributes = ['connected', 'disconnect_time', 'last_seen', 'client_state', 'connect_time', 'status_detail'];
 
             if (data.clients && Object.keys(data.clients).length > 0) {
                 for (const clientId in data.clients) {
                     const client = data.clients[clientId];
                     const row = clientsTableBody.insertRow();
                     
-                    const cellId = row.insertCell();
-                    cellId.textContent = clientId;
+                    row.insertCell().textContent = clientId;
 
                     const cellConnectionStatus = row.insertCell();
                     const isConnected = client.connected === 'true' || client.connected === true;
@@ -126,26 +184,92 @@
                     cellConnectionStatus.className = isConnected ? 'status-connected' : 'status-disconnected';
 
                     const cellLastSeen = row.insertCell();
-                    cellLastSeen.textContent = isConnected ? (client.last_seen || "N/A") : (client.disconnect_time || "N/A");
+                    cellLastSeen.textContent = isConnected ? (client.last_seen || client.connect_time || "N/A") : (client.disconnect_time || "N/A");
                     
-                    const cellDetails = row.insertCell();
-                    const details = [];
+                    const cellDetailedStatus = row.insertCell();
+                    let detailsAdded = false;
                     for (const key in client) {
-                        if (key !== 'connected' && key !== 'disconnect_time' && key !== 'last_seen') {
-                            details.push(`${key}: ${client[key]}`);
+                        if (!fixedAttributes.includes(key) && client[key] !== null && client[key] !== undefined) {
+                            const detailDiv = document.createElement('div');
+                            detailDiv.className = 'detail-item';
+                            const keySpan = document.createElement('span');
+                            keySpan.className = 'key';
+                            keySpan.textContent = `${key}: `;
+                            detailDiv.appendChild(keySpan);
+                            const valueSpan = document.createElement('span');
+                            valueSpan.className = 'value';
+                            valueSpan.textContent = client[key];
+                            detailDiv.appendChild(valueSpan);
+                            cellDetailedStatus.appendChild(detailDiv);
+                            detailsAdded = true;
                         }
                     }
-                    cellDetails.textContent = details.join(', ') || "No additional details";
+                     // Display client_state and status_detail if present and not covered by fixed connection status
+                    if (client.client_state) {
+                         const detailDiv = document.createElement('div');
+                         detailDiv.className = 'detail-item';
+                         detailDiv.innerHTML = `<span class="key">State: </span><span class="value">${client.client_state}</span>`;
+                         cellDetailedStatus.appendChild(detailDiv);
+                         detailsAdded = true;
+                    }
+                    if (client.status_detail) {
+                         const detailDiv = document.createElement('div');
+                         detailDiv.className = 'detail-item';
+                         detailDiv.innerHTML = `<span class="key">Detail: </span><span class="value">${client.status_detail}</span>`;
+                         cellDetailedStatus.appendChild(detailDiv);
+                         detailsAdded = true;
+                    }
+
+                    if (!detailsAdded) {
+                        cellDetailedStatus.textContent = "No additional details";
+                    }
+
+                    // Actions Cell
+                    const cellActions = row.insertCell();
+
+                    const pauseButton = document.createElement('button');
+                    pauseButton.textContent = "Pause";
+                    pauseButton.className = "action-button";
+                    pauseButton.id = `pause-btn-${clientId}`;
+                    pauseButton.addEventListener('click', () => handleClientAction(clientId, 'pause'));
+                    
+                    const resumeButton = document.createElement('button');
+                    resumeButton.textContent = "Resume";
+                    resumeButton.className = "action-button";
+                    resumeButton.id = `resume-btn-${clientId}`;
+                    resumeButton.addEventListener('click', () => handleClientAction(clientId, 'resume'));
+
+                    const disconnectButton = document.createElement('button');
+                    disconnectButton.className = "action-button";
+                    disconnectButton.id = `disconnect-btn-${clientId}`;
+                    disconnectButton.addEventListener('click', () => handleClientAction(clientId, 'disconnect'));
+
+                    if (!isConnected) {
+                        pauseButton.disabled = true;
+                        resumeButton.disabled = true;
+                        disconnectButton.disabled = true;
+                        disconnectButton.textContent = "Disconnected";
+                    } else {
+                        disconnectButton.disabled = false;
+                        disconnectButton.textContent = "Disconnect";
+                        if (client.client_state === "paused") {
+                            pauseButton.disabled = true;
+                            resumeButton.disabled = false;
+                        } else { // Running or other state
+                            pauseButton.disabled = false;
+                            resumeButton.disabled = true;
+                        }
+                    }
+                    cellActions.appendChild(pauseButton);
+                    cellActions.appendChild(resumeButton);
+                    cellActions.appendChild(disconnectButton);
                 }
             } else {
-                clientsTableBody.innerHTML = '<tr><td colspan="4">No clients connected or reporting.</td></tr>';
+                clientsTableBody.innerHTML = '<tr><td colspan="5">No clients connected or reporting.</td></tr>';
             }
         }
 
-        // Fetch statuses on initial load
         fetchStatuses();
-
-        // Refresh statuses every 5 seconds
         setInterval(fetchStatuses, 5000);
     </script>
 </body>
