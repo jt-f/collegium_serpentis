@@ -1,9 +1,9 @@
 import asyncio
 import json
-import uuid
-import random
 import os
-from datetime import datetime, timezone
+import random
+import uuid
+from datetime import UTC, datetime
 
 import websockets
 from websockets import ConnectionClosed, InvalidURI
@@ -26,7 +26,7 @@ is_paused = False  # Global flag to control status updates
 def get_current_status_payload() -> dict:
     """Generates the current status payload (CPU, memory, etc.)."""
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "cpu_usage": round(random.uniform(0.0, 100.0), 2),
         "memory_usage": round(random.uniform(0.0, 100.0), 2),
     }
@@ -86,7 +86,7 @@ async def listen_for_commands(websocket):
                         ack_status = {
                             "client_state": "paused",
                             "acknowledged_command": "pause",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(UTC).isoformat(),
                         }
                         await send_status_message(websocket, ack_status)
                     else:
@@ -114,11 +114,13 @@ async def listen_for_commands(websocket):
                             f"Resume command ignored."
                         )
                 elif command == "disconnect":
-                    print(f"Client {CLIENT_ID}: Disconnect command received. Shutting down.")
+                    print(
+                        f"Client {CLIENT_ID}: Disconnect command received. Shutting down."
+                    )
                     ack_status = {
                         "client_state": "disconnecting",
                         "acknowledged_command": "disconnect",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                     }
                     await send_status_message(websocket, ack_status)
                     raise ClientInitiatedDisconnect("Server requested disconnect.")
@@ -148,7 +150,9 @@ async def listen_for_commands(websocket):
             print(
                 f"Client {CLIENT_ID}: Server initiated disconnect. " f"Shutting down."
             )
-            raise ClientInitiatedDisconnect("Server disconnected client - shutting down")
+            raise ClientInitiatedDisconnect(
+                "Server disconnected client - shutting down"
+            ) from None
 
         # This exception will propagate to connect_and_send_updates
         # and trigger reconnection
@@ -191,7 +195,7 @@ async def connect_and_send_updates():
                 # Send initial status update to register client
                 initial_status = {
                     "client_state": "running",
-                    "connected_at": datetime.now(timezone.utc).isoformat(),
+                    "connected_at": datetime.now(UTC).isoformat(),
                     **get_current_status_payload(),
                 }
                 await send_status_message(websocket, initial_status)
@@ -211,7 +215,9 @@ async def connect_and_send_updates():
                 await asyncio.gather(listener_task, periodic_sender_task)
 
         except ClientInitiatedDisconnect as e:
-            print(f"Client {CLIENT_ID}: Shutting down due to client-initiated disconnect: {e}")
+            print(
+                f"Client {CLIENT_ID}: Shutting down due to client-initiated disconnect: {e}"
+            )
             return  # Exit the function, stopping the client
         except SystemExit as e:
             print(f"Client {CLIENT_ID}: Shutting down as requested: {e}")

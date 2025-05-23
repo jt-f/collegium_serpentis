@@ -3,8 +3,8 @@ import json
 import os
 import unittest
 import uuid
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch, MagicMock
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from websockets import ConnectionClosed
 from websockets.frames import Close
@@ -87,7 +87,7 @@ class TestClientMessageHandling(unittest.IsolatedAsyncioTestCase):
         mock_websocket = AsyncMock()
 
         status_attributes = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "cpu_usage": 45.5,
             "memory_usage": 67.8,
             "client_state": "running",
@@ -139,7 +139,7 @@ class TestCommandListener(unittest.IsolatedAsyncioTestCase):
                 try:
                     return next(self.messages)
                 except StopIteration:
-                    raise StopAsyncIteration
+                    raise StopAsyncIteration from None
 
         return AsyncIter(messages)
 

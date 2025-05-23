@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -15,14 +15,14 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 JSON_LOGS = os.getenv("JSON_LOGS", "false").lower() == "true"
 
 # Redis Configuration
-REDIS_CONFIG: Dict[str, Any] = {
+REDIS_CONFIG: dict[str, Any] = {
     "host": os.getenv("REDIS_HOST", "localhost"),
     "port": int(os.getenv("REDIS_PORT", 6379)),
     "db": int(os.getenv("REDIS_DB", 0)),
 }
 
 # Server Configuration
-SERVER_CONFIG: Dict[str, Any] = {
+SERVER_CONFIG: dict[str, Any] = {
     "host": os.getenv("HOST", "0.0.0.0"),
     "port": int(os.getenv("PORT", 8000)),
     "reload": os.getenv("RELOAD", "false").lower() == "true",

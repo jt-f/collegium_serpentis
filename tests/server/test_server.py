@@ -1,30 +1,31 @@
-import json
-import pytest
 import asyncio  # Added for cleanup task tests
+import json
+from datetime import UTC, datetime, timedelta  # Added for time manipulation
 from unittest.mock import (
     AsyncMock,
     patch,
 )  # Removed unused 'call' import
-from datetime import datetime, timedelta, UTC  # Added for time manipulation
 
+import pytest
 import redis
 from fastapi import WebSocketDisconnect  # Removed unused WebSocket import
 from fastapi.testclient import TestClient
-
-from tests.server.conftest import (
-    AsyncIteratorWrapper,
-    ErringAsyncIterator,
-)
 
 # Import the server module directly to ensure we patch the correct instance
 import src.server.server as server_module
 from src.server.server import (
     app as fastapi_app,  # For lifespan testing
-    # active_connections, # We will access this via server_module.active_connections
-    status_store,
-    client_cache,
+)
+from src.server.server import (
     cleanup_disconnected_clients,  # Import the task function
     # Removed unused logger import
+    client_cache,
+    # active_connections, # We will access this via server_module.active_connections
+    status_store,
+)
+from tests.server.conftest import (
+    AsyncIteratorWrapper,
+    ErringAsyncIterator,
 )
 
 
