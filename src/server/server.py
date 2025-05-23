@@ -13,6 +13,21 @@ from fastapi.staticfiles import StaticFiles
 from src.shared.utils.config import REDIS_CONFIG
 from src.shared.utils.logging import get_logger
 
+# Initialize logger
+logger = get_logger(__name__)
+
+# Initialize Redis client
+redis_client = redis.asyncio.Redis(**REDIS_CONFIG)
+
+# Dictionary to keep track of active WebSocket connections
+active_connections: dict[str, WebSocket] = {}
+
+# Status store to track service health
+status_store: dict[str, str] = {"redis": "unknown"}
+
+# In-memory cache as fallback when Redis is unavailable
+client_cache: dict[str, dict[str, Any]] = {}
+
 
 async def perform_cleanup_cycle():
     """Perform one cycle of client cleanup. This function can be tested directly."""
@@ -47,7 +62,8 @@ async def perform_cleanup_cycle():
                                 clients_to_delete.append(client_id)
                         except ValueError as e:
                             logger.warning(
-                                f"Invalid disconnect_time format for client {client_id}: {disconnect_time_str}, error: {e}"
+                                f"Invalid disconnect_time format for client "
+                                f"{client_id}: {disconnect_time_str}, error: {e}"
                             )
 
             for client_id in clients_to_delete:
@@ -60,7 +76,8 @@ async def perform_cleanup_cycle():
                     del client_cache[client_id]
             if clients_to_delete:
                 logger.debug(
-                    f"Finished Redis cleanup, deleted {len(clients_to_delete)} clients."
+                    f"Finished Redis cleanup, deleted {len(clients_to_delete)} "
+                    f"clients."
                 )
 
         except redis.RedisError as e:
@@ -88,18 +105,21 @@ async def perform_cleanup_cycle():
                         cached_clients_to_delete.append(client_id)
                 except ValueError as e:
                     logger.warning(
-                        f"Invalid disconnect_time format in cache for client {client_id}: {disconnect_time_str}, error: {e}"
+                        f"Invalid disconnect_time format in cache for client "
+                        f"{client_id}: {disconnect_time_str}, error: {e}"
                     )
 
     for client_id in cached_clients_to_delete:
         if client_id in client_cache:
             logger.info(
-                f"Deleting data for disconnected client {client_id} from in-memory cache."
+                f"Deleting data for disconnected client {client_id} from "
+                f"in-memory cache."
             )
             del client_cache[client_id]
     if cached_clients_to_delete:
         logger.debug(
-            f"Finished cache cleanup, deleted {len(cached_clients_to_delete)} clients from cache."
+            f"Finished cache cleanup, deleted {len(cached_clients_to_delete)} "
+            f"clients from cache."
         )
 
     logger.debug("Client cleanup cycle finished.")
@@ -116,11 +136,7 @@ async def cleanup_disconnected_clients():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(
-        "Starting server...",
-        redis_host=REDIS_CONFIG["host"],
-        redis_port=REDIS_CONFIG["port"],
-    )
+    logger.info("Starting server...")
     try:
         await redis_client.ping()
         status_store["redis"] = "connected"
@@ -158,26 +174,11 @@ async def lifespan(app: FastAPI):
             logger.warning("Error while closing Redis connection", error=str(e))
 
 
-# Initialize logger
-logger = get_logger(__name__)
-
-# Initialize Redis client
-redis_client = redis.asyncio.Redis(**REDIS_CONFIG)
-
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="src/server/static"), name="static")
-
-# Dictionary to keep track of active WebSocket connections
-active_connections: dict[str, WebSocket] = {}
-
-# Status store to track service health
-status_store: dict[str, str] = {"redis": "unknown"}
-
-# In-memory cache as fallback when Redis is unavailable
-client_cache: dict[str, dict[str, Any]] = {}
 
 
 async def redis_health_check() -> None:
