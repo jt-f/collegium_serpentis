@@ -11,6 +11,12 @@ from websockets import ConnectionClosed, InvalidURI
 # Use environment variable with fallback for flexibility
 SERVER_URL = os.getenv("SERVER_URL", "ws://localhost:8000/ws")
 CLIENT_ID = str(uuid.uuid4())
+
+
+class ClientInitiatedDisconnect(SystemExit):
+    pass
+
+
 STATUS_INTERVAL = 10  # seconds
 RECONNECT_DELAY = 5  # seconds
 
@@ -107,6 +113,15 @@ async def listen_for_commands(websocket):
                             f"Client {CLIENT_ID}: Already running. "
                             f"Resume command ignored."
                         )
+                elif command == "disconnect":
+                    print(f"Client {CLIENT_ID}: Disconnect command received. Shutting down.")
+                    ack_status = {
+                        "client_state": "disconnecting",
+                        "acknowledged_command": "disconnect",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    await send_status_message(websocket, ack_status)
+                    raise ClientInitiatedDisconnect("Server requested disconnect.")
                 else:
                     print(
                         f"Client {CLIENT_ID}: " f"Unknown command received: {command}"
@@ -133,8 +148,7 @@ async def listen_for_commands(websocket):
             print(
                 f"Client {CLIENT_ID}: Server initiated disconnect. " f"Shutting down."
             )
-            # Set a flag or raise a specific exception to indicate shutdown
-            raise SystemExit("Server disconnected client - shutting down")
+            raise ClientInitiatedDisconnect("Server disconnected client - shutting down")
 
         # This exception will propagate to connect_and_send_updates
         # and trigger reconnection
@@ -196,6 +210,9 @@ async def connect_and_send_updates():
                 # block for reconnection.
                 await asyncio.gather(listener_task, periodic_sender_task)
 
+        except ClientInitiatedDisconnect as e:
+            print(f"Client {CLIENT_ID}: Shutting down due to client-initiated disconnect: {e}")
+            return  # Exit the function, stopping the client
         except SystemExit as e:
             print(f"Client {CLIENT_ID}: Shutting down as requested: {e}")
             return  # Exit the function, stopping the client
