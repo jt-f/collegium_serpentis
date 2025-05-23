@@ -7,7 +7,8 @@ repos:
         language: system
         types: [python]
         args: [--line-length=88]
-      
+        exclude: '/(\.git|\.venv|venv|env|build|dist|__pycache__)/'
+
       - id: ruff-check
         name: ruff check
         entry: poetry run ruff check

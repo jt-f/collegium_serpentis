@@ -3,24 +3,21 @@ import json
 from datetime import UTC, datetime, timedelta  # Added for time manipulation
 from unittest.mock import (
     AsyncMock,
-    patch,
-)  # Removed unused 'call' import
+    call,
+)  # Added call for checking multiple calls
 
 import pytest
 import redis
-from fastapi import WebSocketDisconnect  # Removed unused WebSocket import
+from fastapi import WebSocketDisconnect  # Added WebSocket for typing
 from fastapi.testclient import TestClient
 
-# Import the server module directly to ensure we patch the correct instance
-import src.server.server as server_module
+from src.server import server as server_module
 from src.server.server import (
     app as fastapi_app,  # For lifespan testing
 )
 from src.server.server import (
-    cleanup_disconnected_clients,  # Import the task function
-    # Removed unused logger import
     client_cache,
-    # active_connections, # We will access this via server_module.active_connections
+    perform_cleanup_cycle,  # Import the testable function instead
     status_store,
 )
 from tests.server.conftest import (
@@ -279,45 +276,18 @@ class TestClientControlAPI:
         mock_redis: AsyncMock,
         monkeypatch,
     ):
-        # Import active_connections directly from the server module
-        from src.server.server import active_connections
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
+        # Set up the mock WebSocket connection
         mock_ws = AsyncMock()
         mock_ws.send_text = AsyncMock()
         mock_ws.close = AsyncMock()
-        # Configure the mock to behave like a truthy WebSocket
-        mock_ws.configure_mock(__bool__=lambda self: True)
 
-        # Clear and populate the actual active_connections dict (don't replace it)
-        active_connections.clear()
-        active_connections[self.TEST_CLIENT_ID] = mock_ws
+        # Clear and populate the actual active_connections dict
+        server_module.active_connections.clear()
+        server_module.active_connections[self.TEST_CLIENT_ID] = mock_ws
 
-        # Ensure client_cache is also clean for this client ID
-        if self.TEST_CLIENT_ID in client_cache:
-            del client_cache[self.TEST_CLIENT_ID]
+        monkeypatch.setitem(status_store, "redis", "connected")
 
-        # Verify the setup worked
-        print(f"DEBUG (test setup): active_connections id: {id(active_connections)}")
-        print(
-            f"DEBUG (test setup): server_module.active_connections id: "
-            f"{id(server_module.active_connections)}"
-        )
-        print(f"DEBUG (test setup): active_connections contents: {active_connections}")
-        print(
-            f"DEBUG (test setup): server_module.active_connections contents: "
-            f"{server_module.active_connections}"
-        )
-
-        assert (
-            self.TEST_CLIENT_ID in active_connections
-        ), f"Client ID {self.TEST_CLIENT_ID} not in active_connections after direct set"
-        assert (
-            active_connections[self.TEST_CLIENT_ID] is mock_ws
-        ), "Mock WS not found for client ID in active_connections after direct set"
-
-        # Configure Redis mock for initial state check if any
+        # Configure Redis mock for initial state check
         mock_redis.hgetall.return_value = {
             b"connected": b"true",
             b"client_state": b"running",
@@ -326,36 +296,35 @@ class TestClientControlAPI:
 
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/disconnect")
 
-        print(
-            f"DEBUG (test): Post-call active_connections contents: "
-            f"{active_connections}"
-        )
-        print(
-            f"DEBUG (test): Post-call server_module.active_connections contents: "
-            f"{server_module.active_connections}"
-        )
-        print(
-            f"DEBUG (test): Response status: {response.status_code}, "
-            f"JSON: {response.json()}"
-        )
+        assert response.status_code == 200
 
-        assert (
-            response.status_code == 200
-        ), f"Expected 200, got {response.status_code}. Response: {response.text}"
-
-        response_json = response.json()
-        assert (
-            "disconnected successfully by server"
-            in response_json.get("message", "").lower()
-        ), f"Expected disconnect success message, got: {response_json.get('message')}"
-
-        mock_ws.close.assert_called_once_with(
+        # Verify disconnect command is sent BEFORE closing
+        mock_ws.send_text.assert_awaited_once_with(
+            json.dumps({"command": "disconnect"})
+        )
+        mock_ws.close.assert_awaited_once_with(
             code=1000, reason="Server initiated disconnect"
         )
-        mock_ws.send_text.assert_called_once_with(json.dumps({"command": "disconnect"}))
 
-        # Check Redis update for disconnection
-        mock_redis.hset.assert_called_once()
+        # Ensure send_text was called before close
+        call_order = mock_ws.mock_calls
+        send_call_index = -1
+        close_call_index = -1
+        for i, c in enumerate(call_order):
+            if c == call.send_text(json.dumps({"command": "disconnect"})):
+                send_call_index = i
+            elif c == call.close(code=1000, reason="Server initiated disconnect"):
+                close_call_index = i
+
+        assert send_call_index != -1, "send_text was not called"
+        assert close_call_index != -1, "close was not called"
+        assert (
+            send_call_index < close_call_index
+        ), "send_text was not called before close"
+
+        # The client should be removed from active_connections
+        assert self.TEST_CLIENT_ID not in server_module.active_connections
+        mock_redis.hset.assert_awaited_once()
         args, kwargs = mock_redis.hset.call_args
         assert args[0] == f"client:{self.TEST_CLIENT_ID}:status"
         assert "mapping" in kwargs
@@ -412,19 +381,18 @@ class TestClientControlAPI:
         mock_redis: AsyncMock,
         monkeypatch,
     ):
-        # Import active_connections directly from the server module
-        from src.server.server import active_connections
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
+        # Set up the mock WebSocket connection
         mock_ws = AsyncMock()
         mock_ws.send_text = AsyncMock()
+        mock_ws.close = AsyncMock()
         # Configure the mock to behave like a truthy WebSocket
         mock_ws.configure_mock(__bool__=lambda self: True)
 
         # Clear and populate the actual active_connections dict (don't replace it)
-        active_connections.clear()
-        active_connections[self.TEST_CLIENT_ID] = mock_ws
+        server_module.active_connections.clear()
+        server_module.active_connections[self.TEST_CLIENT_ID] = mock_ws
+
+        monkeypatch.setitem(status_store, "redis", "connected")
 
         mock_redis.hgetall.return_value = {
             b"connected": b"true",
@@ -434,11 +402,13 @@ class TestClientControlAPI:
 
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
         assert response.status_code == 200
-        response_json = response.json()
-        assert "pause command sent" in response_json.get("message", "").lower()
-        mock_ws.send_text.assert_called_once()
-        sent_command = json.loads(mock_ws.send_text.call_args[0][0])
-        assert sent_command["command"] == "pause"
+        success_msg = f"Pause command sent to client {self.TEST_CLIENT_ID}."
+        assert response.json()["message"] == success_msg
+        mock_ws.send_text.assert_awaited_once_with(json.dumps({"command": "pause"}))
+        mock_redis.hset.assert_awaited_once()
+        args, kwargs = mock_redis.hset.call_args
+        assert args[0] == f"client:{self.TEST_CLIENT_ID}:status"
+        assert kwargs["mapping"]["client_state"] == "paused"
 
     def test_pause_client_not_found(self, test_client: TestClient):
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
@@ -452,30 +422,29 @@ class TestClientControlAPI:
         mock_redis: AsyncMock,
         monkeypatch,
     ):
-        # Import active_connections directly from the server module
-        from src.server.server import active_connections
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
+        # Set up the mock WebSocket connection
         mock_ws = AsyncMock()
         mock_ws.send_text = AsyncMock(side_effect=WebSocketDisconnect(code=1000))
-        # Configure the mock to behave like a truthy WebSocket
-        mock_ws.configure_mock(__bool__=lambda self: True)
+        mock_ws.close = AsyncMock()
 
-        # Clear and populate the actual active_connections dict (don't replace it)
-        active_connections.clear()
-        active_connections[self.TEST_CLIENT_ID] = mock_ws
+        # Patch the active_connections in the server module
+        test_active_connections = {self.TEST_CLIENT_ID: mock_ws}
+        monkeypatch.setattr(
+            "src.server.server.active_connections", test_active_connections
+        )
 
-        mock_redis.hgetall.return_value = {
-            b"connected": b"true",
-            b"client_state": b"running",
-        }
-        mock_redis.hset = AsyncMock()
-
+        monkeypatch.setitem(status_store, "redis", "connected")
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
         assert response.status_code == 410
-        response_json = response.json()
-        assert "client disconnected" in response_json.get("detail", "").lower()
+        disconnect_msg = (
+            f"Client {self.TEST_CLIENT_ID} disconnected during pause attempt."
+        )
+        assert disconnect_msg in response.json()["detail"]
+        assert self.TEST_CLIENT_ID not in test_active_connections
+        mock_redis.hset.assert_awaited_once()
+        args, kwargs = mock_redis.hset.call_args
+        assert kwargs["mapping"]["connected"] == "false"
+        assert kwargs["mapping"]["status_detail"] == "Disconnected during pause attempt"
 
     def test_pause_client_runtime_error_on_send(
         self,
@@ -483,32 +452,33 @@ class TestClientControlAPI:
         mock_redis: AsyncMock,
         monkeypatch,
     ):
-        # Import active_connections directly from the server module
-        from src.server.server import active_connections
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
+        # Set up the mock WebSocket connection
         mock_ws = AsyncMock()
         mock_ws.send_text = AsyncMock(side_effect=RuntimeError("Send failed"))
-        # Configure the mock to behave like a truthy WebSocket
-        mock_ws.configure_mock(__bool__=lambda self: True)
+        mock_ws.close = AsyncMock()
 
-        # Clear and populate the actual active_connections dict (don't replace it)
-        active_connections.clear()
-        active_connections[self.TEST_CLIENT_ID] = mock_ws
+        # Patch the active_connections in the server module
+        test_active_connections = {self.TEST_CLIENT_ID: mock_ws}
+        monkeypatch.setattr(
+            "src.server.server.active_connections", test_active_connections
+        )
 
-        mock_redis.hgetall.return_value = {
-            b"connected": b"true",
-            b"client_state": b"running",
-        }
-        mock_redis.hset = AsyncMock()
-
+        monkeypatch.setitem(status_store, "redis", "connected")
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
         assert response.status_code == 500
-        response_json = response.json()
-        assert "failed to send pause command" in response_json.get("detail", "").lower()
-        # Verify the client was removed from active_connections due to error
-        mock_redis.hset.assert_called_once()
+        error_msg = (
+            f"Failed to send pause command to client {self.TEST_CLIENT_ID} "
+            f"due to connection state."
+        )
+        assert error_msg in response.json()["detail"]
+        assert self.TEST_CLIENT_ID not in test_active_connections
+        mock_redis.hset.assert_awaited_once()
+        args, kwargs = mock_redis.hset.call_args
+        assert kwargs["mapping"]["connected"] == "false"
+        assert (
+            kwargs["mapping"]["status_detail"]
+            == "Connection error during pause attempt"
+        )
 
     def test_resume_client_success(
         self,
@@ -516,19 +486,18 @@ class TestClientControlAPI:
         mock_redis: AsyncMock,
         monkeypatch,
     ):
-        # Import active_connections directly from the server module
-        from src.server.server import active_connections
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
+        # Set up the mock WebSocket connection
         mock_ws = AsyncMock()
         mock_ws.send_text = AsyncMock()
+        mock_ws.close = AsyncMock()
         # Configure the mock to behave like a truthy WebSocket
         mock_ws.configure_mock(__bool__=lambda self: True)
 
         # Clear and populate the actual active_connections dict (don't replace it)
-        active_connections.clear()
-        active_connections[self.TEST_CLIENT_ID] = mock_ws
+        server_module.active_connections.clear()
+        server_module.active_connections[self.TEST_CLIENT_ID] = mock_ws
+
+        monkeypatch.setitem(status_store, "redis", "connected")
 
         mock_redis.hgetall.return_value = {
             b"connected": b"true",
@@ -538,11 +507,13 @@ class TestClientControlAPI:
 
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/resume")
         assert response.status_code == 200
-        response_json = response.json()
-        assert "resume command sent" in response_json.get("message", "").lower()
-        mock_ws.send_text.assert_called_once()
-        sent_command = json.loads(mock_ws.send_text.call_args[0][0])
-        assert sent_command["command"] == "resume"
+        success_msg = f"Resume command sent to client {self.TEST_CLIENT_ID}."
+        assert response.json()["message"] == success_msg
+        mock_ws.send_text.assert_awaited_once_with(json.dumps({"command": "resume"}))
+        mock_redis.hset.assert_awaited_once()
+        args, kwargs = mock_redis.hset.call_args
+        assert args[0] == f"client:{self.TEST_CLIENT_ID}:status"
+        assert kwargs["mapping"]["client_state"] == "running"
 
     def test_resume_client_not_found(self, test_client: TestClient):
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/resume")
@@ -556,32 +527,31 @@ class TestClientControlAPI:
         mock_redis: AsyncMock,
         monkeypatch,
     ):
-        # Import active_connections directly from the server module
-        from src.server.server import active_connections
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
+        # Set up the mock WebSocket connection
         mock_ws = AsyncMock()
         mock_ws.send_text = AsyncMock(side_effect=WebSocketDisconnect(code=1000))
-        # Configure the mock to behave like a truthy WebSocket
-        mock_ws.configure_mock(__bool__=lambda self: True)
+        mock_ws.close = AsyncMock()
 
-        # Clear and populate the actual active_connections dict (don't replace it)
-        active_connections.clear()
-        active_connections[self.TEST_CLIENT_ID] = mock_ws
+        # Patch the active_connections in the server module
+        test_active_connections = {self.TEST_CLIENT_ID: mock_ws}
+        monkeypatch.setattr(
+            "src.server.server.active_connections", test_active_connections
+        )
 
-        mock_redis.hgetall.return_value = {
-            b"connected": b"true",
-            b"client_state": b"paused",
-        }
-        mock_redis.hset = AsyncMock()
-
+        monkeypatch.setitem(status_store, "redis", "connected")
         response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/resume")
         assert response.status_code == 410
-        response_json = response.json()
-        assert "client disconnected" in response_json.get("detail", "").lower()
-        # assert self.TEST_CLIENT_ID not in active_connections
-        # # This assertion might be problematic
+        disconnect_msg = (
+            f"Client {self.TEST_CLIENT_ID} disconnected during resume attempt."
+        )
+        assert disconnect_msg in response.json()["detail"]
+        assert self.TEST_CLIENT_ID not in test_active_connections
+        mock_redis.hset.assert_awaited_once()
+        args, kwargs = mock_redis.hset.call_args
+        assert kwargs["mapping"]["connected"] == "false"
+        assert (
+            kwargs["mapping"]["status_detail"] == "Disconnected during resume attempt"
+        )
 
 
 @pytest.mark.asyncio
@@ -593,15 +563,9 @@ class TestCleanupTask:
 
     @pytest.fixture(autouse=True)
     def manage_cleanup_params(self, monkeypatch):
-        monkeypatch.setattr(
-            "src.server.server.CLEANUP_INTERVAL_SECONDS", 1, raising=False
-        )
-        monkeypatch.setattr(
-            "src.server.server.DISCONNECTED_RETENTION_SECONDS",
-            0.5,
-            raising=False,
-        )
-        client_cache.clear()
+        # We can't patch local variables inside the function, so we'll test the cleanup logic directly
+        # The cleanup_disconnected_clients function has hardcoded intervals that we can't easily change
+        pass
 
     async def test_cleanup_deletes_old_disconnected_client_redis_and_cache(
         self, mock_redis: AsyncMock, monkeypatch
@@ -610,6 +574,7 @@ class TestCleanupTask:
         now = datetime.now(UTC)
         old_disconnect_time = (now - timedelta(seconds=60)).isoformat()
 
+        # Client in Redis and Cache, old disconnect
         mock_redis.scan_iter.return_value = AsyncIteratorWrapper(
             [f"client:{self.CLIENT_ID_OLD}:status".encode()]
         )
@@ -624,19 +589,10 @@ class TestCleanupTask:
             "disconnect_time": old_disconnect_time,
         }
 
-        mock_sleep = AsyncMock()
-        mock_sleep.side_effect = [None, asyncio.CancelledError("Stop loop for test")]
-        with patch("src.server.server.asyncio.sleep", mock_sleep), pytest.raises(
-            asyncio.CancelledError, match="Stop loop for test"
-        ):
-            await cleanup_disconnected_clients()
+        await perform_cleanup_cycle()
 
         mock_redis.delete.assert_awaited_with(f"client:{self.CLIENT_ID_OLD}:status")
         assert self.CLIENT_ID_OLD not in client_cache
-        # Check that sleep was called with the (potentially unpatched) interval
-        # from server.py. server.py cleanup_disconnected_clients uses local
-        # cleanup_interval = 60
-        mock_sleep.assert_any_call(60)
 
     async def test_cleanup_keeps_recent_disconnected_client_redis(
         self, mock_redis: AsyncMock, monkeypatch
@@ -661,16 +617,10 @@ class TestCleanupTask:
             "disconnect_time": recent_disconnect_time,
         }
 
-        mock_sleep = AsyncMock()
-        mock_sleep.side_effect = [None, asyncio.CancelledError("Stop loop for test")]
-        with patch("src.server.server.asyncio.sleep", mock_sleep), pytest.raises(
-            asyncio.CancelledError, match="Stop loop for test"
-        ):
-            await cleanup_disconnected_clients()
+        await perform_cleanup_cycle()
 
         mock_redis.delete.assert_not_awaited()
-        assert self.CLIENT_ID_RECENT in client_cache
-        mock_sleep.assert_any_call(60)
+        assert self.CLIENT_ID_RECENT in client_cache  # Should remain in cache too
 
     async def test_cleanup_keeps_connected_client_redis(
         self, mock_redis: AsyncMock, monkeypatch
@@ -686,16 +636,10 @@ class TestCleanupTask:
 
         client_cache[self.CLIENT_ID_CONNECTED] = {"connected": "true"}
 
-        mock_sleep = AsyncMock()
-        mock_sleep.side_effect = [None, asyncio.CancelledError("Stop loop for test")]
-        with patch("src.server.server.asyncio.sleep", mock_sleep), pytest.raises(
-            asyncio.CancelledError, match="Stop loop for test"
-        ):
-            await cleanup_disconnected_clients()
+        await perform_cleanup_cycle()
 
         mock_redis.delete.assert_not_awaited()
         assert self.CLIENT_ID_CONNECTED in client_cache
-        mock_sleep.assert_any_call(60)
 
     async def test_cleanup_deletes_old_disconnected_client_from_cache_redis_unavailable(
         self, mock_redis: AsyncMock, monkeypatch
@@ -709,20 +653,11 @@ class TestCleanupTask:
             "disconnect_time": old_disconnect_time,
         }
         mock_redis.scan_iter.return_value = AsyncIteratorWrapper([])
-        mock_redis.delete = (
-            AsyncMock()
-        )  # Ensure delete is awaitable (though not called here)
 
-        mock_sleep = AsyncMock()
-        mock_sleep.side_effect = [None, asyncio.CancelledError("Stop loop for test")]
-        with patch("src.server.server.asyncio.sleep", mock_sleep), pytest.raises(
-            asyncio.CancelledError, match="Stop loop for test"
-        ):
-            await cleanup_disconnected_clients()
+        await perform_cleanup_cycle()
 
-        mock_redis.delete.assert_not_awaited()
+        mock_redis.delete.assert_not_awaited()  # Redis delete should not be called
         assert self.CLIENT_ID_CACHE_OLD not in client_cache
-        mock_sleep.assert_any_call(60)
 
     async def test_cleanup_handles_redis_error_gracefully(
         self, mock_redis: AsyncMock, monkeypatch
@@ -732,26 +667,20 @@ class TestCleanupTask:
         old_disconnect_time = (now - timedelta(seconds=60)).isoformat()
 
         mock_redis.scan_iter.side_effect = redis.RedisError("Scan failed")
-        mock_redis.delete = (
-            AsyncMock()
-        )  # Ensure delete is awaitable (though not called here)
 
+        # Client in cache that should be cleaned up
         client_cache[self.CLIENT_ID_CACHE_OLD] = {
             "connected": "false",
             "disconnect_time": old_disconnect_time,
         }
 
-        mock_sleep = AsyncMock()
-        mock_sleep.side_effect = [None, asyncio.CancelledError("Stop loop for test")]
-        with patch("src.server.server.asyncio.sleep", mock_sleep), pytest.raises(
-            asyncio.CancelledError, match="Stop loop for test"
-        ):
-            await cleanup_disconnected_clients()
+        await perform_cleanup_cycle()
 
-        assert status_store["redis"] == "unavailable"
-        mock_redis.delete.assert_not_awaited()
-        assert self.CLIENT_ID_CACHE_OLD not in client_cache
-        mock_sleep.assert_any_call(60)
+        assert status_store["redis"] == "unavailable"  # Status should be updated
+        mock_redis.delete.assert_not_awaited()  # No Redis delete if scan failed
+        assert (
+            self.CLIENT_ID_CACHE_OLD not in client_cache
+        )  # Cache cleanup should still run
 
 
 # Keep existing HTML and static file tests

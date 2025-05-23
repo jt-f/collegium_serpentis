@@ -14,98 +14,104 @@ from src.shared.utils.config import REDIS_CONFIG
 from src.shared.utils.logging import get_logger
 
 
-async def cleanup_disconnected_clients():
-    cleanup_interval = 60  # Check every 60 seconds
+async def perform_cleanup_cycle():
+    """Perform one cycle of client cleanup. This function can be tested directly."""
     max_disconnect_duration = 60  # 1 minute in seconds
+    logger.debug("Running cleanup for disconnected clients...")
+    current_time = datetime.now(UTC)
+    clients_to_delete = []
+
+    # Check Redis first if available
+    if status_store["redis"] == "connected":
+        try:
+            async for key_b in redis_client.scan_iter("client:*:status"):
+                key = key_b.decode()
+                client_id = key.split(":")[1]
+                status_data_raw = await redis_client.hgetall(key)
+
+                # Decode status_data from bytes to str
+                status_data = {
+                    k.decode(): v.decode() for k, v in status_data_raw.items()
+                }
+
+                if status_data.get("connected") == "false":
+                    disconnect_time_str = status_data.get("disconnect_time")
+                    if disconnect_time_str:
+                        try:
+                            disconnect_time = datetime.fromisoformat(
+                                disconnect_time_str.replace("Z", "+00:00")
+                            )
+                            if (
+                                current_time - disconnect_time
+                            ).total_seconds() > max_disconnect_duration:
+                                clients_to_delete.append(client_id)
+                        except ValueError as e:
+                            logger.warning(
+                                f"Invalid disconnect_time format for client {client_id}: {disconnect_time_str}, error: {e}"
+                            )
+
+            for client_id in clients_to_delete:
+                logger.info(
+                    f"Deleting data for disconnected client {client_id} from Redis."
+                )
+                await redis_client.delete(f"client:{client_id}:status")
+                # Also remove from in-memory cache if it exists there, for consistency
+                if client_id in client_cache:
+                    del client_cache[client_id]
+            if clients_to_delete:
+                logger.debug(
+                    f"Finished Redis cleanup, deleted {len(clients_to_delete)} clients."
+                )
+
+        except redis.RedisError as e:
+            logger.error(f"Redis error during client cleanup: {e}")
+            status_store["redis"] = "unavailable"  # Mark Redis as unavailable
+        except Exception as e:
+            logger.error(f"Unexpected error during Redis client cleanup: {e}")
+
+    # Fallback or primary: Check in-memory cache
+    cached_clients_to_delete = []
+    for client_id, status_data in list(client_cache.items()):
+        if client_id in clients_to_delete and status_store["redis"] == "connected":
+            continue
+
+        if status_data.get("connected") == "false":
+            disconnect_time_str = status_data.get("disconnect_time")
+            if disconnect_time_str:
+                try:
+                    disconnect_time = datetime.fromisoformat(
+                        disconnect_time_str.replace("Z", "+00:00")
+                    )
+                    if (
+                        current_time - disconnect_time
+                    ).total_seconds() > max_disconnect_duration:
+                        cached_clients_to_delete.append(client_id)
+                except ValueError as e:
+                    logger.warning(
+                        f"Invalid disconnect_time format in cache for client {client_id}: {disconnect_time_str}, error: {e}"
+                    )
+
+    for client_id in cached_clients_to_delete:
+        if client_id in client_cache:
+            logger.info(
+                f"Deleting data for disconnected client {client_id} from in-memory cache."
+            )
+            del client_cache[client_id]
+    if cached_clients_to_delete:
+        logger.debug(
+            f"Finished cache cleanup, deleted {len(cached_clients_to_delete)} clients from cache."
+        )
+
+    logger.debug("Client cleanup cycle finished.")
+
+
+async def cleanup_disconnected_clients():
+    """Background task that periodically cleans up disconnected clients."""
+    cleanup_interval = 60  # Check every 60 seconds
     logger.info("Starting background task: cleanup_disconnected_clients")
     while True:
         await asyncio.sleep(cleanup_interval)
-        logger.debug("Running cleanup for disconnected clients...")
-        current_time = datetime.now(UTC)
-        clients_to_delete = []
-
-        # Check Redis first if available
-        if status_store["redis"] == "connected":
-            try:
-                async for key_b in redis_client.scan_iter("client:*:status"):
-                    key = key_b.decode()
-                    client_id = key.split(":")[1]
-                    status_data_raw = await redis_client.hgetall(key)
-
-                    # Decode status_data from bytes to str
-                    status_data = {
-                        k.decode(): v.decode() for k, v in status_data_raw.items()
-                    }
-
-                    if status_data.get("connected") == "false":
-                        disconnect_time_str = status_data.get("disconnect_time")
-                        if disconnect_time_str:
-                            try:
-                                disconnect_time = datetime.fromisoformat(
-                                    disconnect_time_str.replace("Z", "+00:00")
-                                )
-                                if (
-                                    current_time - disconnect_time
-                                ).total_seconds() > max_disconnect_duration:
-                                    clients_to_delete.append(client_id)
-                            except ValueError as e:
-                                logger.warning(
-                                    f"Invalid disconnect_time format for client {client_id}: {disconnect_time_str}, error: {e}"
-                                )
-
-                for client_id in clients_to_delete:
-                    logger.info(
-                        f"Deleting data for disconnected client {client_id} from Redis."
-                    )
-                    await redis_client.delete(f"client:{client_id}:status")
-                    # Also remove from in-memory cache if it exists there, for consistency
-                    if client_id in client_cache:
-                        del client_cache[client_id]
-                if clients_to_delete:
-                    logger.debug(
-                        f"Finished Redis cleanup, deleted {len(clients_to_delete)} clients."
-                    )
-
-            except redis.RedisError as e:
-                logger.error(f"Redis error during client cleanup: {e}")
-                status_store["redis"] = "unavailable"  # Mark Redis as unavailable
-            except Exception as e:
-                logger.error(f"Unexpected error during Redis client cleanup: {e}")
-
-        # Fallback or primary: Check in-memory cache
-        cached_clients_to_delete = []
-        for client_id, status_data in list(client_cache.items()):
-            if client_id in clients_to_delete and status_store["redis"] == "connected":
-                continue
-
-            if status_data.get("connected") == "false":
-                disconnect_time_str = status_data.get("disconnect_time")
-                if disconnect_time_str:
-                    try:
-                        disconnect_time = datetime.fromisoformat(
-                            disconnect_time_str.replace("Z", "+00:00")
-                        )
-                        if (
-                            current_time - disconnect_time
-                        ).total_seconds() > max_disconnect_duration:
-                            cached_clients_to_delete.append(client_id)
-                    except ValueError as e:
-                        logger.warning(
-                            f"Invalid disconnect_time format in cache for client {client_id}: {disconnect_time_str}, error: {e}"
-                        )
-
-        for client_id in cached_clients_to_delete:
-            if client_id in client_cache:
-                logger.info(
-                    f"Deleting data for disconnected client {client_id} from in-memory cache."
-                )
-                del client_cache[client_id]
-        if cached_clients_to_delete:
-            logger.debug(
-                f"Finished cache cleanup, deleted {len(cached_clients_to_delete)} clients from cache."
-            )
-
-        logger.debug("Client cleanup cycle finished.")
+        await perform_cleanup_cycle()
 
 
 @asynccontextmanager
