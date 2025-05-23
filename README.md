@@ -140,6 +140,63 @@ If you prefer to run the server directly (without Docker for the server itself):
 *   **Stopping Redis**: `docker stop redis-server`
 *   **Removing Redis (once stopped)**: `docker rm redis-server`
 
+## :busts_in_silhouette: Running Clients
+
+Once you have the server running, you can connect clients to test the system and see real-time status updates in action!
+
+### Option 1: Running a Client with Poetry (Manual)
+
+If you want to run a client directly using Poetry:
+
+1.  **Make sure the server is running** (using either Docker Compose or manual setup from above).
+
+2.  **Run the client**:
+    ```bash
+    poetry run python src/client/client.py
+    ```
+
+This will start a client that connects to the WebSocket server at `ws://localhost:8000/ws`. The client will:
+*   Register itself with a unique ID
+*   Send periodic status updates
+*   Handle reconnection automatically if the connection is lost
+
+### Option 2: Running Clients with Docker
+
+You can also run clients in Docker containers for easier management and testing with multiple clients:
+
+1.  **Build the client Docker image** (if not already built):
+    ```bash
+    docker build -f Dockerfile.client -t collegium-client .
+    ```
+
+2.  **Run a single client**:
+    ```bash
+    docker run --rm --network host collegium-client
+    ```
+
+3.  **Run multiple clients** (great for testing!):
+    ```bash
+    # Run 3 clients in the background
+    for i in {1..3}; do
+        docker run --rm --network host --name "client-$i" -d collegium-client
+    done
+    ```
+
+4.  **Stop all running client containers**:
+    ```bash
+    docker stop $(docker ps -q --filter ancestor=collegium-client)
+    ```
+
+**Note**: The `--network host` flag allows the Docker client to connect to the server running on your localhost. On Windows/Mac, you might need to use `host.docker.internal:8000` instead of `localhost:8000` in the client configuration.
+
+### Watching Clients in Action
+
+Once you have clients running, you can:
+
+*   **Watch the Dashboard**: Open `http://localhost:8000/` to see all connected clients and their real-time status updates.
+*   **Check Server Logs**: The server will show connection events and status updates in its console output.
+*   **Monitor Client Logs**: Each client will show its connection status and the messages it's sending to the server.
+
 ### :mag: API Documentation
 
 Once your server is running, you get interactive API documentation for free! Open your web browser and go to:

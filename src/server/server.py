@@ -1,89 +1,117 @@
-import json
 import asyncio
+import json
 import random
-from datetime import datetime, UTC
-from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from typing import Any
 
 import redis
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.shared.utils.logging import get_logger
 from src.shared.utils.config import REDIS_CONFIG
+from src.shared.utils.logging import get_logger
+
+
+async def perform_cleanup_cycle():
+    """Perform one cycle of client cleanup. This function can be tested directly."""
+    max_disconnect_duration = 60  # 1 minute in seconds
+    logger.debug("Running cleanup for disconnected clients...")
+    current_time = datetime.now(UTC)
+    clients_to_delete = []
+
+    # Check Redis first if available
+    if status_store["redis"] == "connected":
+        try:
+            async for key_b in redis_client.scan_iter("client:*:status"):
+                key = key_b.decode()
+                client_id = key.split(":")[1]
+                status_data_raw = await redis_client.hgetall(key)
+
+                # Decode status_data from bytes to str
+                status_data = {
+                    k.decode(): v.decode() for k, v in status_data_raw.items()
+                }
+
+                if status_data.get("connected") == "false":
+                    disconnect_time_str = status_data.get("disconnect_time")
+                    if disconnect_time_str:
+                        try:
+                            disconnect_time = datetime.fromisoformat(
+                                disconnect_time_str.replace("Z", "+00:00")
+                            )
+                            if (
+                                current_time - disconnect_time
+                            ).total_seconds() > max_disconnect_duration:
+                                clients_to_delete.append(client_id)
+                        except ValueError as e:
+                            logger.warning(
+                                f"Invalid disconnect_time format for client {client_id}: {disconnect_time_str}, error: {e}"
+                            )
+
+            for client_id in clients_to_delete:
+                logger.info(
+                    f"Deleting data for disconnected client {client_id} from Redis."
+                )
+                await redis_client.delete(f"client:{client_id}:status")
+                # Also remove from in-memory cache if it exists there, for consistency
+                if client_id in client_cache:
+                    del client_cache[client_id]
+            if clients_to_delete:
+                logger.debug(
+                    f"Finished Redis cleanup, deleted {len(clients_to_delete)} clients."
+                )
+
+        except redis.RedisError as e:
+            logger.error(f"Redis error during client cleanup: {e}")
+            status_store["redis"] = "unavailable"  # Mark Redis as unavailable
+        except Exception as e:
+            logger.error(f"Unexpected error during Redis client cleanup: {e}")
+
+    # Fallback or primary: Check in-memory cache
+    cached_clients_to_delete = []
+    for client_id, status_data in list(client_cache.items()):
+        if client_id in clients_to_delete and status_store["redis"] == "connected":
+            continue
+
+        if status_data.get("connected") == "false":
+            disconnect_time_str = status_data.get("disconnect_time")
+            if disconnect_time_str:
+                try:
+                    disconnect_time = datetime.fromisoformat(
+                        disconnect_time_str.replace("Z", "+00:00")
+                    )
+                    if (
+                        current_time - disconnect_time
+                    ).total_seconds() > max_disconnect_duration:
+                        cached_clients_to_delete.append(client_id)
+                except ValueError as e:
+                    logger.warning(
+                        f"Invalid disconnect_time format in cache for client {client_id}: {disconnect_time_str}, error: {e}"
+                    )
+
+    for client_id in cached_clients_to_delete:
+        if client_id in client_cache:
+            logger.info(
+                f"Deleting data for disconnected client {client_id} from in-memory cache."
+            )
+            del client_cache[client_id]
+    if cached_clients_to_delete:
+        logger.debug(
+            f"Finished cache cleanup, deleted {len(cached_clients_to_delete)} clients from cache."
+        )
+
+    logger.debug("Client cleanup cycle finished.")
 
 
 async def cleanup_disconnected_clients():
+    """Background task that periodically cleans up disconnected clients."""
     cleanup_interval = 60  # Check every 60 seconds
-    max_disconnect_duration = 60  # 1 minute in seconds
     logger.info("Starting background task: cleanup_disconnected_clients")
     while True:
         await asyncio.sleep(cleanup_interval)
-        logger.debug("Running cleanup for disconnected clients...")
-        current_time = datetime.now(UTC)
-        clients_to_delete = []
-
-        # Check Redis first if available
-        if status_store["redis"] == "connected":
-            try:
-                async for key_b in redis_client.scan_iter("client:*:status"):
-                    key = key_b.decode()
-                    client_id = key.split(":")[1]
-                    status_data_raw = await redis_client.hgetall(key)
-                    
-                    # Decode status_data from bytes to str
-                    status_data = {k.decode(): v.decode() for k, v in status_data_raw.items()}
-
-                    if status_data.get("connected") == "false":
-                        disconnect_time_str = status_data.get("disconnect_time")
-                        if disconnect_time_str:
-                            try:
-                                disconnect_time = datetime.fromisoformat(disconnect_time_str.replace("Z", "+00:00"))
-                                if (current_time - disconnect_time).total_seconds() > max_disconnect_duration:
-                                    clients_to_delete.append(client_id)
-                            except ValueError as e:
-                                logger.warning(f"Invalid disconnect_time format for client {client_id}: {disconnect_time_str}, error: {e}")
-                
-                for client_id in clients_to_delete:
-                    logger.info(f"Deleting data for disconnected client {client_id} from Redis.")
-                    await redis_client.delete(f"client:{client_id}:status")
-                    # Also remove from in-memory cache if it exists there, for consistency
-                    if client_id in client_cache:
-                        del client_cache[client_id]
-                if clients_to_delete:
-                    logger.debug(f"Finished Redis cleanup, deleted {len(clients_to_delete)} clients.")
-
-            except redis.RedisError as e:
-                logger.error(f"Redis error during client cleanup: {e}")
-                status_store["redis"] = "unavailable" # Mark Redis as unavailable
-            except Exception as e:
-                logger.error(f"Unexpected error during Redis client cleanup: {e}")
-
-        # Fallback or primary: Check in-memory cache
-        cached_clients_to_delete = [] 
-        for client_id, status_data in list(client_cache.items()):
-            if client_id in clients_to_delete and status_store["redis"] == "connected": 
-                continue
-
-            if status_data.get("connected") == "false":
-                disconnect_time_str = status_data.get("disconnect_time")
-                if disconnect_time_str:
-                    try:
-                        disconnect_time = datetime.fromisoformat(disconnect_time_str.replace("Z", "+00:00"))
-                        if (current_time - disconnect_time).total_seconds() > max_disconnect_duration:
-                            cached_clients_to_delete.append(client_id)
-                    except ValueError as e:
-                        logger.warning(f"Invalid disconnect_time format in cache for client {client_id}: {disconnect_time_str}, error: {e}")
-            
-        for client_id in cached_clients_to_delete:
-            if client_id in client_cache: 
-                logger.info(f"Deleting data for disconnected client {client_id} from in-memory cache.")
-                del client_cache[client_id]
-        if cached_clients_to_delete:
-            logger.debug(f"Finished cache cleanup, deleted {len(cached_clients_to_delete)} clients from cache.")
-        
-        logger.debug("Client cleanup cycle finished.")
+        await perform_cleanup_cycle()
 
 
 @asynccontextmanager
@@ -143,13 +171,13 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="src/server/static"), name="static")
 
 # Dictionary to keep track of active WebSocket connections
-active_connections: Dict[str, WebSocket] = {}
+active_connections: dict[str, WebSocket] = {}
 
 # Status store to track service health
-status_store: Dict[str, str] = {"redis": "unknown"}
+status_store: dict[str, str] = {"redis": "unknown"}
 
 # In-memory cache as fallback when Redis is unavailable
-client_cache: Dict[str, Dict[str, Any]] = {}
+client_cache: dict[str, dict[str, Any]] = {}
 
 
 async def redis_health_check() -> None:
@@ -167,7 +195,7 @@ async def redis_health_check() -> None:
 
         try:
             await asyncio.wait_for(redis_client.ping(), timeout=1.0)
-        except (redis.ConnectionError, asyncio.TimeoutError) as e:
+        except (TimeoutError, redis.ConnectionError) as e:
             old_status = status_store["redis"]
             status_store["redis"] = "unavailable"
             logger.error(
@@ -244,7 +272,7 @@ async def sync_cache_to_redis() -> None:
 
 
 async def update_client_status(
-    client_id: str, status_attributes: Dict[str, Any]
+    client_id: str, status_attributes: dict[str, Any]
 ) -> bool:
     if not status_attributes:
         return True
@@ -265,7 +293,7 @@ async def update_client_status(
                     client_cache[client_id] = {}
                 client_cache[client_id].update(processed_attributes)
                 return True
-            except (redis.ConnectionError, asyncio.TimeoutError) as e:
+            except (TimeoutError, redis.ConnectionError) as e:
                 status_store["redis"] = "unavailable"
                 logger.error(
                     "Redis connection failed during status update",
@@ -308,7 +336,7 @@ async def update_client_status(
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    client_id: Optional[str] = None
+    client_id: str | None = None
     try:
         await websocket.accept()
         logger.info("New WebSocket connection established")
@@ -430,7 +458,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.get("/statuses")
-async def get_all_statuses() -> Dict[str, Any]:
+async def get_all_statuses() -> dict[str, Any]:
     logger.debug("Fetching all client statuses")
     statuses = {}
     error_msg = None
@@ -585,7 +613,7 @@ async def pause_client(client_id: str):
         raise HTTPException(
             status_code=410,
             detail=f"Client {client_id} disconnected during pause attempt.",
-        )
+        ) from None
     except RuntimeError as e:
         logger.error(
             f"Failed to send pause command to client {client_id} "
@@ -603,13 +631,13 @@ async def pause_client(client_id: str):
             f"Failed to send pause command to client {client_id} "
             f"due to connection state."
         )
-        raise HTTPException(status_code=500, detail=detail)
+        raise HTTPException(status_code=500, detail=detail) from e
     except Exception as e:
         logger.error(f"Error sending pause command to client {client_id}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to send pause command to client {client_id}.",
-        )
+        ) from e
 
 
 @app.post("/clients/{client_id}/resume")
@@ -644,7 +672,7 @@ async def resume_client(client_id: str):
         raise HTTPException(
             status_code=410,
             detail=f"Client {client_id} disconnected during resume attempt.",
-        )
+        ) from None
     except RuntimeError as e:
         logger.error(
             f"Failed to send resume command to client {client_id} "
@@ -662,19 +690,20 @@ async def resume_client(client_id: str):
             f"Failed to send resume command to client {client_id} "
             f"due to connection state."
         )
-        raise HTTPException(status_code=500, detail=detail)
+        raise HTTPException(status_code=500, detail=detail) from e
     except Exception as e:
         logger.error(f"Error sending resume command to client {client_id}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to send resume command to client {client_id}.",
-        )
+        ) from e
 
 
 @app.get("/")
 async def get_status_page():
     """Serves the status display HTML page."""
     return FileResponse("src/server/static/status_display.html")
+
 
 @app.get("/health")
 async def health_check():
