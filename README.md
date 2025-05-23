@@ -235,15 +235,39 @@ We use `pytest` to make sure everything is working as expected.
 Here are some tools and practices used:
 *   **Testing**: `pytest` is our go-to for writing and running tests.
 *   **Code Formatting**: We use `black` to keep our Python code neat and consistent.
-*   **Linting**: `flake8` helps us catch common code issues and maintain quality.
+*   **Linting**: `ruff` helps us catch common code issues and maintain quality with blazing fast performance.
 
 ### Pre-Commit Hooks
 
-Remember those pre-commit hooks we installed? They run `black` and `flake8` automatically before you make a commit. This helps keep the codebase clean.
+Remember those pre-commit hooks we installed? They run `black` and `ruff` automatically before you make a commit. This helps keep the codebase clean.
 
 *   **Run Manually (If Needed)**: If you want to run all the pre-commit checks on all files at any time:
     ```bash
     poetry run pre-commit run --all-files
+    ```
+
+### Manual Code Quality Checks
+
+You can also run the tools manually:
+
+*   **Format code with Black**:
+    ```bash
+    poetry run black src/ tests/
+    ```
+
+*   **Lint and check with Ruff**:
+    ```bash
+    poetry run ruff check src/ tests/
+    ```
+
+*   **Auto-fix linting issues with Ruff**:
+    ```bash
+    poetry run ruff check --fix src/ tests/
+    ```
+
+*   **Format code with Ruff** (alternative to Black):
+    ```bash
+    poetry run ruff format src/ tests/
     ```
 
 ## :scroll: License

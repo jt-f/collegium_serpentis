@@ -1,23 +1,20 @@
 repos:
--   repo: https://github.com/psf/black
-    rev: 25.1.0  # Matches your current Black version
-    hooks:
-    - id: black
-      language_version: python3.13
-      args: [--line-length=88]  # Black's default line length
-      types_or: [python, pyi]
-      exclude: '/(\.git|\.venv|venv|env|build|dist|__pycache__)/'
-
--   repo: https://github.com/pycqa/flake8
-    rev: 7.2.0  # Matches your current Flake8 version
-    hooks:
-    - id: flake8
-      additional_dependencies: [flake8-bugbear==24.2.6]  # Optional but recommended
-      args: [--max-line-length=88]  # Match Black's line length
-      exclude: '/(\.git|\.venv|venv|env|build|dist|__pycache__)/'
-
 -   repo: local
     hooks:
+      - id: black
+        name: black
+        entry: poetry run black
+        language: system
+        types: [python]
+        args: [--line-length=88]
+      
+      - id: ruff-check
+        name: ruff check
+        entry: poetry run ruff check
+        language: system
+        types: [python]
+        args: [--fix, --exit-non-zero-on-fix]
+            
       - id: pytest
         name: Run pytest
         entry: poetry run pytest -s -vvv --cov=src --cov-report term-missing

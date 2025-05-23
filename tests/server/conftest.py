@@ -1,9 +1,12 @@
+from collections.abc import Generator
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch  # Added MagicMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, patch, MagicMock  # Added MagicMock
+
 from src.server.server import app as fastapi_app
-from typing import Generator, Any
 
 
 @pytest.fixture(scope="module")
@@ -19,7 +22,7 @@ def test_client(test_app: FastAPI) -> TestClient:
 
 
 @pytest.fixture
-def mock_redis() -> Generator[AsyncMock, None, None]:
+def mock_redis() -> Generator[AsyncMock]:
     """Create a mock Redis client."""
     with patch("src.server.server.redis_client", new_callable=AsyncMock) as mock:
         # Configure hset to return a value (typically the number of fields updated)
@@ -50,7 +53,7 @@ class AsyncIteratorWrapper:
         try:
             return next(self.iter_items)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None
 
 
 class ErringAsyncIterator:
