@@ -40,6 +40,13 @@ def websocket_client(test_client: TestClient) -> TestClient:
     return test_client
 
 
+@pytest.fixture
+def mock_sleep() -> Generator[AsyncMock]:
+    """Create a mock for asyncio.sleep."""
+    with patch("asyncio.sleep", new_callable=AsyncMock) as mock:
+        yield mock
+
+
 # Helper classes start here
 class AsyncIteratorWrapper:
     def __init__(self, items: list[Any]):  # Used Any for items
