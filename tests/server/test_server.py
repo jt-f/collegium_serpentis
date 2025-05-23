@@ -1,10 +1,12 @@
 import asyncio  # Added for cleanup task tests
 import json
 from datetime import UTC, datetime, timedelta  # Added for time manipulation
+
+# Added call for checking multiple calls
 from unittest.mock import (
     AsyncMock,
     call,
-)  # Added call for checking multiple calls
+)
 
 import pytest
 import redis
@@ -12,18 +14,13 @@ from fastapi import WebSocketDisconnect  # Added WebSocket for typing
 from fastapi.testclient import TestClient
 
 from src.server import server as server_module
-from src.server.server import (
-    app as fastapi_app,  # For lifespan testing
-)
-from src.server.server import (
+from src.server.server import app as fastapi_app  # For lifespan testing
+from src.server.server import (  # Import the testable function instead
     client_cache,
-    perform_cleanup_cycle,  # Import the testable function instead
+    perform_cleanup_cycle,
     status_store,
 )
-from tests.server.conftest import (
-    AsyncIteratorWrapper,
-    ErringAsyncIterator,
-)
+from tests.server.conftest import AsyncIteratorWrapper, ErringAsyncIterator
 
 
 # Helper to reset global state that might be modified by tests
