@@ -24,11 +24,13 @@ def test_client(test_app: FastAPI) -> TestClient:
 @pytest.fixture
 def mock_redis() -> Generator[AsyncMock]:
     """Create a mock Redis client."""
-    with patch("src.server.server.redis_client", new_callable=AsyncMock) as mock:
+    with patch("src.server.redis_manager.redis_client", new_callable=AsyncMock) as mock:
         # Configure hset to return a value (typically the number of fields updated)
         mock.hset = AsyncMock(return_value=1)
-        mock.scan_iter = MagicMock()  # Changed from AsyncMock
+        # Use MagicMock for scan_iter to return async iterator directly, not as coroutine
+        mock.scan_iter = MagicMock()
         mock.hgetall = AsyncMock()
+        mock.delete = AsyncMock()
         # Configure ping to succeed by default
         mock.ping = AsyncMock(return_value=True)
         yield mock
