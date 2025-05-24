@@ -404,6 +404,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
         frontendClientId,
         connectedClientsCount,
         isConnected,
+        reconnectAttempts,
 
         // Actions
         connect,

@@ -32,11 +32,13 @@ describe('ClientsTable', () => {
         mockStore = useWebSocketStore()
     })
 
-    it('should render with no clients', () => {
+    it('should render with no clients', async () => {
         mockStore.clients = []
         mockStore.connectedClientsCount = 0
         mockStore.isConnected = true
         mockStore.connectionStatus = 'connected'
+
+        await wrapper.vm.$nextTick()
 
         expect(wrapper.find('h2').text()).toBe('Connected Clients (0)')
         expect(wrapper.find('.no-clients-message').text()).toContain('No clients connected or reporting')

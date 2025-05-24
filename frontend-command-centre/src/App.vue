@@ -12,6 +12,7 @@
       <div class="main-layout">
         <div class="left-pane">
           <RedisStatus />
+          <ServerConnectionMonitor />
           <PlaceholderBlock title="Agent Conversations" content="Chat messages will appear here." />
           <PlaceholderBlock title="Agent Network Graph" content="Network graph will be displayed here." />
         </div>
@@ -30,6 +31,7 @@
 import { onMounted, onUnmounted } from 'vue'
 import FrontendClientIdDisplay from './components/FrontendClientIdDisplay.vue'
 import RedisStatus from './components/RedisStatus.vue'
+import ServerConnectionMonitor from './components/ServerConnectionMonitor.vue'
 import ClientsTable from './components/ClientsTable.vue'
 import PlaceholderBlock from './components/PlaceholderBlock.vue'
 import { useWebSocketStore } from './stores/websocket.js'
