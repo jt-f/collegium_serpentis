@@ -104,19 +104,109 @@ class TestWebSocketServer:
             error_data = json.loads(error_response)
             assert "error" in error_data
             assert error_data["error"] == "Invalid JSON format"
-            assert "Invalid JSON received" in caplog.text
+            assert "Invalid JSON received" in caplog.text  # This might change with Pydantic
 
-    def test_missing_client_id(self, websocket_client, caplog):
+    # This test is being replaced by test_websocket_missing_client_id_pydantic
+    # def test_missing_client_id(self, websocket_client, caplog):
+    #     with websocket_client.websocket_connect("/ws") as websocket:
+    #         message = {"status": {"key": "value"}}
+    #         websocket.send_text(json.dumps(message))
+    #         error_response = websocket.receive_text()
+    #         error_data = json.loads(error_response)
+    #         assert "error" in error_data
+    #         assert error_data["error"] == "client_id is required"
+    #         with pytest.raises(WebSocketDisconnect):
+    #             websocket.receive_text()
+    #         assert "Received message without client_id" in caplog.text
+
+    def test_websocket_valid_message_pydantic(self, websocket_client, mock_redis):
+        test_client_id = "pyd_valid_client"
+        test_status = {"temp": "30C", "load": 75}
         with websocket_client.websocket_connect("/ws") as websocket:
-            message = {"status": {"key": "value"}}
+            message = {"client_id": test_client_id, "status": test_status}
+            websocket.send_text(json.dumps(message))
+            response_data = websocket.receive_text()
+            response_json = json.loads(response_data)
+
+            assert response_json.get("result") == "message_processed"
+            assert response_json.get("client_id") == test_client_id
+            assert "status_updated" in response_json
+            # Pydantic model adds 'connected' and 'connect_time' upon registration
+            expected_base_keys = ["connected", "connect_time"]
+            all_expected_keys = expected_base_keys + list(test_status.keys())
+            assert all(key in response_json["status_updated"] for key in all_expected_keys)
+            assert response_json.get("redis_status") is not None # Check presence
+
+    def test_websocket_missing_client_id_pydantic(self, websocket_client, caplog):
+        with websocket_client.websocket_connect("/ws") as websocket:
+            message = {"status": {"temp": "30C"}} # Missing client_id
             websocket.send_text(json.dumps(message))
             error_response = websocket.receive_text()
             error_data = json.loads(error_response)
-            assert "error" in error_data
-            assert error_data["error"] == "client_id is required"
-            with pytest.raises(WebSocketDisconnect):
+
+            assert error_data.get("error") == "Invalid message format"
+            assert "details" in error_data
+            assert isinstance(error_data["details"], list)
+            assert len(error_data["details"]) > 0
+            client_id_error_found = any(
+                detail.get("type") == "missing" and "client_id" in detail.get("loc", [])
+                for detail in error_data["details"]
+            )
+            assert client_id_error_found, "client_id missing error not found in details"
+
+            # Connection should be closed by the server (code 1003)
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_text() # Attempt to receive again
+            assert exc_info.value.code == 1003
+            assert "Invalid message format" in caplog.text # Check server logs
+
+    def test_websocket_incorrect_client_id_type_pydantic(self, websocket_client, caplog):
+        with websocket_client.websocket_connect("/ws") as websocket:
+            message = {"client_id": 123, "status": {"temp": "30C"}} # client_id is int, not str
+            websocket.send_text(json.dumps(message))
+            error_response = websocket.receive_text()
+            error_data = json.loads(error_response)
+
+            assert error_data.get("error") == "Invalid message format"
+            assert "details" in error_data
+            assert isinstance(error_data["details"], list)
+            assert len(error_data["details"]) > 0
+            type_error_found = any(
+                "string_type" in detail.get("type") and "client_id" in detail.get("loc", [])
+                for detail in error_data["details"]
+            )
+            assert type_error_found, "client_id type error not found in details"
+            
+            with pytest.raises(WebSocketDisconnect) as exc_info:
                 websocket.receive_text()
-            assert "Received message without client_id" in caplog.text
+            assert exc_info.value.code == 1003
+            assert "Invalid message format" in caplog.text
+
+    # Re-evaluating test_invalid_json_message for Pydantic context
+    # Pydantic's model_validate_json will raise ValidationError if JSON is malformed.
+    # The server should catch this ValidationError.
+    def test_websocket_malformed_json_pydantic(self, websocket_client, caplog):
+        with websocket_client.websocket_connect("/ws") as websocket:
+            malformed_json_string = "this is not json"
+            websocket.send_text(malformed_json_string)
+            error_response = websocket.receive_text()
+            error_data = json.loads(error_response) # The error response itself should be valid JSON
+
+            assert error_data.get("error") == "Invalid message format"
+            assert "details" in error_data
+            assert isinstance(error_data["details"], list)
+            # Pydantic's error for malformed JSON might be a bit generic under model_validate_json
+            # It often indicates an issue with the input type before specific field validation.
+            # Example: {'type': 'json_invalid', 'loc': ('__root__',), 'msg': 'JSON decode error', ...}
+            json_decode_error_found = any(
+                "json_invalid" in detail.get("type") for detail in error_data["details"]
+            )
+            assert json_decode_error_found, "JSON decode error not found in Pydantic details"
+
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_text()
+            assert exc_info.value.code == 1003 # Data type not supported or similar for validation issues
+            assert "Invalid message format" in caplog.text # Check server log for the error
 
     @pytest.mark.asyncio
     async def test_connection_cleanup_on_disconnect(

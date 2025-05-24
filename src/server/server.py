@@ -9,7 +9,9 @@ import redis
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
+from src.shared.models import WebSocketMessage
 from src.shared.utils.config import REDIS_CONFIG
 from src.shared.utils.logging import get_logger
 
@@ -345,14 +347,16 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             logger.debug("Received message", data_length=len(data))
             try:
-                message = json.loads(data)
-                client_id = message.get("client_id")
-                status_attributes = message.get("status", {})
+                pydantic_message = WebSocketMessage.model_validate_json(data)
+                client_id = pydantic_message.client_id
+                status_attributes = pydantic_message.status if pydantic_message.status is not None else {}
 
-                if not client_id:
-                    logger.warning("Received message without client_id")
+                # client_id is validated by Pydantic model, so this check is technically redundant
+                # but kept for explicitness if model changes.
+                if not client_id: 
+                    logger.warning("Received message without client_id after Pydantic validation (should not happen)")
                     await websocket.send_text(
-                        json.dumps({"error": "client_id is required"})
+                        json.dumps({"error": "client_id is required"}) # Should be caught by Pydantic
                     )
                     await websocket.close()
                     break
@@ -360,13 +364,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 if client_id not in active_connections:
                     active_connections[client_id] = websocket
                     logger.info("Client registered", client_id=client_id)
+                    # Ensure status_attributes is a dict before modifying
+                    if status_attributes is None: # Should not happen if model has default {}
+                        status_attributes = {}
                     status_attributes["connected"] = "true"
                     status_attributes["connect_time"] = datetime.now(UTC).isoformat()
                     status_attributes.pop("disconnect_time", None)
                     status_attributes.pop("status_detail", None)
-
-                if status_attributes:
-                    success = await update_client_status(client_id, status_attributes)
+                
+                # Ensure status_attributes is a dict before passing to update_client_status
+                # This handles the case where status is None from the Pydantic model
+                current_status_to_update = status_attributes if status_attributes is not None else {}
+                if current_status_to_update: # only update if there's something to update
+                    success = await update_client_status(client_id, current_status_to_update)
                     if not success:
                         await websocket.send_text(
                             json.dumps(
@@ -383,7 +393,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
                 status_updated = (
-                    list(status_attributes.keys()) if status_attributes else []
+                    list(current_status_to_update.keys()) if current_status_to_update else []
                 )
                 await websocket.send_text(
                     json.dumps(
@@ -395,8 +405,24 @@ async def websocket_endpoint(websocket: WebSocket):
                         }
                     )
                 )
-            except json.JSONDecodeError as e:
-                logger.error("Invalid JSON received", error=str(e), data=data)
+            except ValidationError as e:
+                logger.error(
+                    "Invalid message format",
+                    error=str(e),
+                    data=data,
+                    client_id=client_id if client_id else "Unknown (pre-validation)",
+                )
+                await websocket.send_text(
+                    json.dumps({"error": "Invalid message format", "details": e.errors()})
+                )
+                # Close connection on validation error, as client is sending bad data
+                if client_id and client_id in active_connections:
+                    if active_connections.get(client_id) == websocket: # Ensure it's the correct websocket instance
+                        del active_connections[client_id]
+                await websocket.close(code=1003) # 1003: Data type not supported
+                break # Exit the while loop for this client
+            except json.JSONDecodeError as e: # Should be caught by Pydantic, but as a fallback
+                logger.error("Invalid JSON received (fallback)", error=str(e), data=data)
                 await websocket.send_text(json.dumps({"error": "Invalid JSON format"}))
             except WebSocketDisconnect:
                 logger.info(
