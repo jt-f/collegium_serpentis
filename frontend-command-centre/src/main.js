@@ -1,10 +1,9 @@
-import './assets/main.css'
+// import './assets/main.css' // Default if present
 
 import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-
+import { createPinia } from 'pinia' // Assuming Pinia is installed
 import App from './App.vue'
-import router from './router'
+import router from './router' // Assuming router is in src/router/index.js
 
 const app = createApp(App)
 

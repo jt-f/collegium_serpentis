@@ -5,8 +5,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from src.server.redis_manager import (
     cleanup_disconnected_clients,
@@ -46,9 +44,6 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
-
-# Mount static files directory
-app.mount("/static", StaticFiles(directory="src/server/static"), name="static")
 
 
 @app.websocket("/ws")
@@ -364,12 +359,6 @@ async def resume_client(client_id: str):
             status_code=500,
             detail=f"Failed to send resume command to client {client_id}.",
         ) from e
-
-
-@app.get("/")
-async def get_status_page():
-    """Serves the status display HTML page."""
-    return FileResponse("src/server/static/status_display.html")
 
 
 @app.get("/health")

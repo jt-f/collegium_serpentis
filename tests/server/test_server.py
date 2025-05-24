@@ -412,22 +412,16 @@ class TestClientControlAPI:
         )
 
 
-# Keep existing HTML and static file tests
-def test_serve_status_dashboard_html(test_client):
+def test_root_endpoint_not_found(test_client):
+    """Test that the root endpoint returns 404 since we don't serve static files."""
     response = test_client.get("/")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    content = response.text
-    assert "<title>Client Status Dashboard</title>" in content
-    assert "<h1>Client Status Dashboard</h1>" in content
+    assert response.status_code == 404
 
 
-def test_serve_static_files(test_client):
+def test_static_files_not_served(test_client):
+    """Test that static file requests return 404 since we don't serve static files."""
     response = test_client.get("/static/status_display.html")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    content = response.text
-    assert "<title>Client Status Dashboard</title>" in content
+    assert response.status_code == 404
 
 
 def test_get_all_statuses_endpoint(test_client):
@@ -447,3 +441,29 @@ def test_health_endpoint(test_client):
     data = response.json()
     assert data["status"] == "ok"
     assert "redis_status" in data
+
+
+def test_cors_headers_not_set_by_default(test_client):
+    """Test that CORS headers are not set by default (handled by frontend proxy)."""
+    response = test_client.get("/health")
+    assert response.status_code == 200
+    # CORS is handled by the frontend development proxy, not the backend
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_api_endpoints_structure(test_client):
+    """Test that our API endpoints are properly structured."""
+    # Test health endpoint
+    health_response = test_client.get("/health")
+    assert health_response.status_code == 200
+    health_data = health_response.json()
+    assert "status" in health_data
+    assert "redis_status" in health_data
+
+    # Test statuses endpoint
+    statuses_response = test_client.get("/statuses")
+    assert statuses_response.status_code == 200
+    statuses_data = statuses_response.json()
+    assert "redis_status" in statuses_data
+    assert "clients" in statuses_data
+    assert "data_source" in statuses_data

@@ -1,0 +1,9 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+You are a Vue3 expert, with Vite. 
+You don't make backend changes without human verification first.
+
+You always add to the frontend unit tests/
