@@ -16,14 +16,9 @@
           <PlaceholderBlock title="Agent Conversations" content="Chat messages will appear here." />
           <PlaceholderBlock title="Agent Network Graph" content="Network graph will be displayed here." />
         </div>
-        <div class="right-pane">
-          <ClientsTable />
-        </div>
       </div>
+      <ClientsTable />
     </main>
-    <footer class="app-footer">
-      <p>&copy; 2024 Command Centre Interface</p>
-    </footer>
   </div>
 </template>
 
@@ -64,6 +59,7 @@ onUnmounted(() => {
   font-family: 'Roboto Condensed', sans-serif;
   background-color: #1A1A1A; /* Base Background */
   color: #EAEAEA; /* Primary Text Color */
+  overflow: hidden;
 }
 
 .app-header {
@@ -87,37 +83,42 @@ onUnmounted(() => {
 
 .app-main {
   flex-grow: 1;
-  padding: 1.5rem;
-  overflow-y: auto;
-  /* Subtle gradient for depth */
+  padding: 2rem 1.5rem 1rem 1.5rem;
   background: radial-gradient(ellipse at center, 
                               var(--color-background-soft) 0%, 
-                              var(--color-background) 70%); 
+                              var(--color-background) 70%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .main-layout {
   display: flex;
-  gap: 1.5rem;
+  gap: 2.5rem;
+  align-items: flex-start;
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .left-pane {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 2rem;
+  min-width: 270px;
 }
 
-.right-pane {
-  flex: 1.618; /* Approximate Golden Ratio */
-}
-
-.app-footer {
-  padding: 0.75rem 1.5rem;
-  background-color: #2C2F33; /* Slightly Lighter Background */
-  color: #A9A9A9; /* Lighter Muted Gray for footer text */
-  text-align: center;
-  font-size: 0.85em;
-  border-top: 1px solid var(--color-border); /* Olive Drab/Spy Green */
-  box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.3); /* Added depth */
+@media (max-width: 900px) {
+  .main-layout {
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+  .left-pane {
+    min-width: 0;
+    width: 100%;
+  }
+  .app-main {
+    padding: 1rem 0.5rem 1rem 0.5rem;
+  }
 }
 </style>

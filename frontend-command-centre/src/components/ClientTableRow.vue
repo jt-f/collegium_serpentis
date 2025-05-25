@@ -4,30 +4,58 @@
       <div class="avatar-placeholder" :style="{ backgroundColor: avatarColor }"></div>
     </td>
     <td class="client-id">{{ clientData.id }}</td>
-    <td><span :class="statusClass">{{ clientData.status }}</span></td>
-    <td class="last-seen">{{ clientData.lastSeen }}</td>
-    <td class="details">{{ clientData.details }}</td>
+    <td class="status-icon-cell">
+      <span :title="statusLabel" :aria-label="statusLabel">
+        <svg v-if="statusIcon === 'check'" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="8" stroke="#556B2F" stroke-width="2"/><path d="M5 10l3 3 5-6" stroke="#556B2F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg v-else-if="statusIcon === 'x'" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="8" stroke="#8C3A3A" stroke-width="2"/><path d="M6 6l6 6M12 6l-6 6" stroke="#8C3A3A" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg v-else-if="statusIcon === 'pause'" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="8" stroke="#F5E8C7" stroke-width="2"/><rect x="6" y="5" width="2" height="8" rx="1" fill="#F5E8C7"/><rect x="10" y="5" width="2" height="8" rx="1" fill="#F5E8C7"/></svg>
+        <svg v-else width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="8" stroke="#A9A9A9" stroke-width="2"/><text x="9" y="13" text-anchor="middle" font-size="10" fill="#A9A9A9">?</text></svg>
+      </span>
+    </td>
+    <td class="type-cell">{{ clientData.type || '-' }}</td>
+    <td class="cpu-cell">
+      <div class="gauge-bar" :title="cpuTooltip">
+        <div class="gauge-fill cpu" :style="{ width: cpuPercent + '%' }"></div>
+      </div>
+      <span class="gauge-label">{{ cpuPercent }}%</span>
+    </td>
+    <td class="ram-cell">
+      <div class="gauge-bar" :title="ramTooltip">
+        <div class="gauge-fill ram" :style="{ width: ramPercent + '%' }"></div>
+      </div>
+      <span class="gauge-label">{{ ramPercent }}%</span>
+    </td>
+    <td class="last-seen">{{ lastSeenClean }}</td>
+    <td class="details">
+      <span v-if="detailsTooltip" class="details-tooltip" :title="detailsTooltip">&#9432;</span>
+    </td>
     <td class="actions-cell">
       <button 
         @click="handleAction('pause')" 
         :disabled="!clientData.canPause"
         class="action-btn pause-btn"
+        aria-label="Pause Client"
+        title="Pause"
       >
-        Pause
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="3" width="3" height="12" rx="1" fill="currentColor"/><rect x="11" y="3" width="3" height="12" rx="1" fill="currentColor"/></svg>
       </button>
       <button 
         @click="handleAction('resume')" 
         :disabled="!clientData.canResume"
         class="action-btn resume-btn"
+        aria-label="Resume Client"
+        title="Resume"
       >
-        Resume
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><polygon points="5,3 15,9 5,15" fill="currentColor"/></svg>
       </button>
       <button 
         @click="handleAction('disconnect')" 
         :disabled="!clientData.canDisconnect"
         class="action-btn disconnect-btn"
+        aria-label="Disconnect Client"
+        title="Disconnect"
       >
-        Disconnect
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="8" stroke="currentColor" stroke-width="2"/><rect x="7" y="5" width="4" height="8" rx="1" fill="currentColor"/></svg>
       </button>
     </td>
   </tr>
@@ -78,9 +106,47 @@ const avatarColor = computed(() => {
   return `hsl(${hue}, 60%, 50%)`
 })
 
-const statusClass = computed(() => {
+const statusIcon = computed(() => {
   const status = (props.clientData.status || 'unknown').toLowerCase()
-  return `status-${status}`
+  if (status === 'connected') return 'check'
+  if (status === 'disconnected') return 'x'
+  if (status === 'paused') return 'pause'
+  return 'unknown'
+})
+
+const statusLabel = computed(() => {
+  const status = (props.clientData.status || 'unknown').toLowerCase()
+  if (status === 'connected') return 'Connected'
+  if (status === 'disconnected') return 'Disconnected'
+  if (status === 'paused') return 'Paused'
+  return 'Unknown'
+})
+
+const cpuPercent = computed(() => {
+  const cpu = parseFloat(props.clientData.cpu)
+  return isNaN(cpu) ? 0 : Math.round(cpu)
+})
+const ramPercent = computed(() => {
+  const ram = parseFloat(props.clientData.ram)
+  return isNaN(ram) ? 0 : Math.round(ram)
+})
+const cpuTooltip = computed(() => `CPU Usage: ${cpuPercent.value}%`)
+const ramTooltip = computed(() => `RAM Usage: ${ramPercent.value}%`)
+const lastSeenClean = computed(() => {
+  // Remove 'Disconnected:' or 'Last seen:' prefix if present
+  return (props.clientData.lastSeen || '').replace(/^(Disconnected:|Last seen:)\s*/i, '')
+})
+const detailsTooltip = computed(() => {
+  // Show all extra metrics or status updates compactly
+  if (props.clientData.details && typeof props.clientData.details === 'object') {
+    return Object.entries(props.clientData.details)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(' | ')
+  }
+  if (typeof props.clientData.details === 'string') {
+    return props.clientData.details
+  }
+  return ''
 })
 
 function handleAction(action) {
@@ -108,17 +174,20 @@ function handleAction(action) {
 
 td {
   vertical-align: middle;
-  /* Using theme variables for text colors now */
+  /* Removed border-right, border-bottom, padding - these are now controlled by ClientsTable.vue */
+  /* font-family and font-size are also controlled by ClientsTable.vue for consistency */
 }
 
 .client-id {
-  font-family: 'Courier New', monospace; /* Keep for "technical" feel */
-  font-size: 0.85em;
-  color: var(--color-text-muted); /* Using theme variable */
+  font-family: 'Courier New', monospace; /* Keep for "technical" feel if desired, otherwise ClientsTable.vue style will apply */
+  font-size: 0.85em; /* Can keep if a smaller font for ID is desired */
+  color: var(--color-text-muted);
+  /* Remove any border or padding here */
 }
 
 .avatar-cell {
   text-align: center;
+  /* Remove any border or padding here */
 }
 
 .avatar-placeholder {
@@ -126,26 +195,78 @@ td {
   height: 30px;
   border-radius: 50%;
   display: inline-block;
-  border: 2px solid var(--color-border); /* Using theme variable */
+  border: 2px solid var(--color-border); /* This border is for the avatar itself, not the cell */
 }
 
-.last-seen {
+.type-cell {
+  text-align: center;
+  /* color: var(--color-text); - Handled by ClientsTable.vue */
+  /* font-size: 0.95em; - Handled by ClientsTable.vue */
+  /* Remove any border or padding here */
+}
+
+.cpu-cell, .ram-cell {
+  min-width: 80px; /* This is fine for column sizing */
+  text-align: center;
+  /* Remove any border or padding here */
+}
+
+.gauge-bar {
+  width: 60px;
+  height: 10px;
+  background: var(--color-background-mute);
+  border-radius: 5px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 0.3em;
+}
+
+.gauge-fill {
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.3s;
+}
+
+.gauge-fill.cpu {
+  background: linear-gradient(90deg, #6B8E23, #F5E8C7);
+}
+
+.gauge-fill.ram {
+  background: linear-gradient(90deg, #6A82A4, #F5E8C7);
+}
+
+.gauge-label {
   font-size: 0.85em;
   color: var(--color-text-muted);
 }
 
-.details {
-  font-size: 0.85em;
-  color: var(--color-text);
-  max-width: 200px; /* This could be made more responsive if needed */
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.details-tooltip {
+  cursor: pointer;
+  color: var(--color-accent-blue);
+  font-size: 1.2em;
+  margin-left: 0.2em;
 }
 
+.last-seen {
+  /* font-size: 0.85em; - Handled by ClientsTable.vue or keep if smaller font is desired */
+  color: var(--color-text-muted);
+  /* Remove any border or padding here */
+}
+
+.status-icon-cell {
+  text-align: center;
+  /* Remove any border or padding here */
+}
 
 .actions-cell {
   text-align: center;
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  gap: 0.25rem;
+  /* Remove any border or padding here */
 }
 
 .action-btn {
@@ -227,5 +348,14 @@ td {
 .status-unknown {
   color: var(--color-text-muted);
   font-weight: 500;
+}
+
+.action-btn svg {
+  vertical-align: middle;
+  display: inline-block;
+}
+.action-btn:hover:not(:disabled) {
+  filter: brightness(1.2);
+  box-shadow: 0 0 4px var(--color-border-hover);
 }
 </style>

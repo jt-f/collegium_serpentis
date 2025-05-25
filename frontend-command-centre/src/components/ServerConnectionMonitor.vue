@@ -1,5 +1,5 @@
 <template>
-  <div class="status-block server-connection">
+  <div class="status-block server-connection" :class="triangleClass">
     <h3>Server Connection</h3>
     <div class="connection-details">
       <div class="connection-status">
@@ -87,6 +87,21 @@ const statusIndicatorClass = computed(() => {
   }
 })
 
+const triangleClass = computed(() => {
+  switch (connectionStatus.value) {
+    case 'connected':
+      return 'triangle-green'
+    case 'connecting':
+      return 'triangle-yellow'
+    case 'error':
+      return 'triangle-red'
+    case 'disconnected':
+      return 'triangle-gray'
+    default:
+      return 'triangle-gray'
+  }
+})
+
 async function retryConnection() {
   isRetrying.value = true
   try {
@@ -126,8 +141,24 @@ function formatTime(isoString) {
   right: 0;
   width: 0;
   height: 0;
-  border-left: 30px solid transparent; /* Adjust size as needed */
-  border-top: 30px solid rgba(140, 58, 58, 0.6); /* --color-accent-red (#8C3A3A) with alpha */
+  border-left: 30px solid transparent;
+  border-top: 30px solid var(--color-accent-red); /* Default red */
+}
+
+.status-block.triangle-green::after {
+  border-top: 30px solid var(--color-accent-green);
+}
+
+.status-block.triangle-yellow::after {
+  border-top: 30px solid var(--color-accent-manila);
+}
+
+.status-block.triangle-red::after {
+  border-top: 30px solid var(--color-accent-red);
+}
+
+.status-block.triangle-gray::after {
+  border-top: 30px solid var(--color-text-muted);
 }
 
 .status-block h3 {

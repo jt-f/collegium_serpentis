@@ -1,5 +1,5 @@
 <template>
-  <div class="status-block clients-table">
+  <div class="clients-table-section">
     <h2>Connected Clients ({{ connectedCount }})</h2>
     <div v-if="!isConnected" class="connection-warning">
       <p>⚠️ WebSocket connection: {{ connectionStatus }}</p>
@@ -7,31 +7,42 @@
         🔄 Retry Connection
       </button>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Avatar</th>
-          <th>Client ID</th>
-          <th>Status</th>
-          <th>Last Seen</th>
-          <th>Details</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-if="clients.length === 0">
-          <td colspan="6" class="no-clients-message">
-            {{ getNoClientsMessage() }}
-          </td>
-        </tr>
-        <ClientTableRow 
-          v-for="client in clients" 
-          :key="client.id" 
-          :client-data="client"
-          @action="handleClientAction" 
-        />
-      </tbody>
-    </table>
+
+    <div class="table-scroll-wrapper">
+      <table class="clients-table-content">
+        <thead>
+          <tr>
+            <th style="width: 60px;">Avatar</th>
+            <th style="width: 20%;">Client ID</th>
+            <th style="width: 80px;">Status</th>
+            <th style="width: 10%;">Type</th>
+            <th style="width: 100px;">CPU</th>
+            <th style="width: 100px;">RAM</th>
+            <th style="width: 15%;">Last Seen</th>
+            <th style="width: 80px;">Details</th>
+            <th style="min-width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="clients.length === 0 && isConnected">
+            <td colspan="9" class="no-clients-message">
+              No clients connected or reporting.
+            </td>
+          </tr>
+          <tr v-if="!isConnected && connectionStatus !== 'error'">
+             <td colspan="9" class="no-clients-message">
+              {{ getNoClientsMessage() }}
+            </td>
+          </tr>
+          <ClientTableRow
+            v-for="client in clients"
+            :key="client.id"
+            :client-data="client"
+            @action="handleClientAction"
+          />
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
 
@@ -56,7 +67,7 @@ function getNoClientsMessage() {
     case 'connected':
       return 'No clients connected or reporting.'
     default:
-      return 'Connecting to server...'
+      return 'Attempting to connect or server unavailable.'
   }
 }
 
@@ -95,68 +106,57 @@ async function handleClientAction({ action, clientId }) {
 </script>
 
 <style scoped>
-.status-block {
-  padding: 1rem 1.5rem; /* 16px 24px */
-  border: 1px solid var(--color-border); /* Olive Drab/Spy Green */
+.clients-table-section {
+  margin: 2rem auto 0 auto;
+  padding: 1rem 1.5rem 2rem 1.5rem;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
-  background-color: var(--color-background-soft); /* Slightly Lighter Background */
-  position: relative; /* For pseudo-element positioning */
-  overflow: hidden; /* To contain the pseudo-element if it bleeds */
+  background-color: var(--color-background-soft);
+  width: 100%;
+  max-width: 1600px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  flex-shrink: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-/* "Classified Stamp" motif */
-.status-block::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 0;
-  height: 0;
-  border-left: 30px solid transparent; /* Adjust size as needed */
-  border-top: 30px solid rgba(140, 58, 58, 0.6); /* --color-accent-red (#8C3A3A) with alpha */
-  /* To make it look like a corner stamp, an alternative would be:
-  transform: rotate(45deg);
-  top: -15px;
-  right: -15px;
-  width: 30px;
-  height: 30px;
-  background-color: rgba(140, 58, 58, 0.6);
-  */
-}
-
-
-.clients-table h2 {
+.clients-table-section h2 {
   margin-top: 0;
-  margin-bottom: 1rem; /* 16px */
-  font-size: 1.4rem; /* Slightly increased for 'Special Elite' if it were used here, but it's Roboto Condensed */
-  font-weight: 700; /* Bolder for Roboto Condensed heading */
+  margin-bottom: 1rem;
+  font-size: 1.4rem;
+  font-weight: 700;
   color: var(--color-heading);
-  border-bottom: 2px solid var(--color-text-muted); /* "Redacted" line style */
-  padding-bottom: 0.5rem; /* 8px - Fibonacci */
+  border-bottom: 2px solid var(--color-text-muted);
+  padding-bottom: 0.5rem;
+  flex-shrink: 0;
 }
 
 .connection-warning {
-  background-color: var(--color-accent-red); /* Muted Red */
-  border: 1px solid var(--color-text-on-manila); /* Darker border for contrast */
+  background-color: var(--color-accent-red);
+  border: 1px solid var(--color-text-on-manila);
   border-radius: 4px;
-  padding: 0.75rem; /* 12px */
-  margin-bottom: 1rem; /* 16px */
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  flex-shrink: 0;
 }
 
 .connection-warning p {
   margin: 0;
-  color: var(--color-text-on-accent); /* White text on red background */
+  color: var(--color-text-on-accent);
   font-weight: 500;
 }
 
 .retry-btn {
-  background-color: var(--color-background-mute); /* Darker accent */
+  background-color: var(--color-background-mute);
   color: var(--color-text);
   border: 1px solid var(--color-border);
-  padding: 0.5rem 1rem; /* 8px 16px */
+  padding: 0.5rem 1rem;
   border-radius: 4px;
   cursor: pointer;
-  margin-top: 0.5rem; /* 8px */
+  margin-top: 0.5rem;
   transition: background-color 0.3s ease, border-color 0.3s ease;
 }
 
@@ -165,41 +165,60 @@ async function handleClientAction({ action, clientId }) {
   border-color: var(--color-border-hover);
 }
 
-table {
+.table-scroll-wrapper {
+  max-height: 450px;
+  overflow-y: auto;
+  border: 1px solid #666666;
+  border-top: none;
+  flex-grow: 1;
+  min-height: 0;
+}
+
+.clients-table-content {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 1rem; /* 16px */
+  table-layout: fixed;
 }
 
-th, td {
-  border: 1px solid var(--color-border); /* Olive Drab */
-  padding: 0.625rem 0.75rem; /* 10px 12px, adjusted for Fibonacci feel */
+.clients-table-content th,
+.clients-table-content td {
+  padding: 0.6rem 0.75rem;
   text-align: left;
-  font-size: 0.9rem; /* Maintained from original */
+  border-left: 1px solid #666666;
+  border-bottom: 1px solid #666666;
+  font-family: 'Roboto Condensed', sans-serif;
+  font-size: 0.9rem;
+  word-wrap: break-word;
 }
 
-th {
-  background-color: var(--color-background-mute); /* Darker accent */
-  font-weight: 700; /* Bolder for table headers */
+.clients-table-content th:first-child,
+.clients-table-content td:first-child {
+  border-left: none;
+}
+
+.clients-table-content th {
+  background-color: var(--color-background-mute);
+  font-weight: 700;
   color: var(--color-heading);
-  font-family: 'Roboto Condensed', sans-serif; /* Ensure consistency */
-  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.4); /* Subtle shadow for depth */
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-top: 1px solid #666666;
 }
 
-td {
-  background-color: var(--color-background); /* Base background for cells */
+.clients-table-content tbody td {
+  background-color: var(--color-background);
   color: var(--color-text);
+}
+
+.clients-table-content tbody tr:hover td {
+  background-color: var(--color-background-soft);
 }
 
 .no-clients-message {
   text-align: center;
-  color: var(--color-text-muted); /* Muted gray */
-  padding: 1.5rem; /* 24px */
+  color: var(--color-text-muted);
+  padding: 1.5rem;
   font-style: italic;
-}
-
-/* Hover effect for table rows */
-tbody tr:hover td {
-  background-color: var(--color-background-soft); /* Slightly Lighter Background */
 }
 </style>

@@ -30,8 +30,8 @@ defineProps({
   right: 0;
   width: 0;
   height: 0;
-  border-left: 30px solid transparent; /* Adjust size as needed */
-  border-top: 30px solid rgba(140, 58, 58, 0.6); /* --color-accent-red (#8C3A3A) with alpha */
+  border-left: 30px solid transparent;
+  border-top: 30px solid var(--color-accent-green);
 }
 
 .placeholder-block h3 {
