@@ -28,3 +28,14 @@ services:
     depends_on:
       - server
     restart: unless-stopped
+
+  frontend: # New Angular frontend service
+    build:
+      context: ./angular-frontend/angular-command-centre # Path to Angular app
+      dockerfile: Dockerfile
+    container_name: angular-command-centre-frontend
+    ports:
+      - "4200:80" # Exposing Angular app on host port 4200, container runs on 80
+    depends_on:
+      - server # Depends on the backend server
+    restart: unless-stopped

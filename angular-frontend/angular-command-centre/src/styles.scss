@@ -1,0 +1,96 @@
+/* You can add global styles to this file, and also import other style files */
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Special+Elite&display=swap');
+
+// Define global SCSS variables based on Vue project's CSS variables
+// These are from frontend-command-centre/src/assets/base.css and frontend-command-centre/src/assets/main.css
+
+// From :root in base.css (simplified)
+:root {
+  --vt-c-white: #ffffff;
+  --vt-c-white-soft: #f8f8f8;
+  --vt-c-white-mute: #f2f2f2;
+
+  --vt-c-black: #1a1a1a; // Matches --color-background
+  --vt-c-black-soft: #222222; // Matches --color-background-soft (example)
+  --vt-c-black-mute: #282828;
+
+  --vt-c-indigo: #2c3e50;
+
+  --vt-c-divider-light-1: rgba(60, 60, 60, 0.29);
+  --vt-c-divider-light-2: rgba(60, 60, 60, 0.12);
+  --vt-c-divider-dark-1: rgba(84, 84, 84, 0.65);
+  --vt-c-divider-dark-2: rgba(84, 84, 84, 0.48);
+
+  --vt-c-text-light-1: var(--vt-c-indigo);
+  --vt-c-text-light-2: rgba(60, 60, 60, 0.66);
+  --vt-c-text-dark-1: var(--vt-c-white);
+  --vt-c-text-dark-2: rgba(235, 235, 235, 0.64);
+}
+
+// Theme-specific variables from App.vue and main.css
+// These are applied within #app-container in app.component.scss,
+// but defining them globally or in a theme.scss is also an option.
+// For now, ensuring they are documented.
+// --color-background: #1A1A1A; (Defined in app.component.scss :host)
+// --color-background-soft: #2A2A2A; (Defined in app.component.scss :host)
+// --color-border: #556B2F; // Olive Drab/Spy Green (Defined in app.component.scss :host)
+// --color-heading: #EAEAEA; (Defined in app.component.scss :host)
+// --color-text: #EAEAEA; (Defined in app.component.scss :host)
+// --color-accent1: #8A9A5B; // Light Olive Green (Example, if needed)
+// --color-accent2: #556B2F; // Olive Drab/Spy Green (Same as --color-border)
+// --color-accent3: #6A82A4; // Desaturated Blue/Steel Blue
+
+body {
+  margin: 0;
+  font-family: 'Roboto Condensed', sans-serif; // Default body font
+  background-color: var(--vt-c-black); // Fallback, actual app background is in app.component
+  color: var(--vt-c-text-dark-1); // Default text color
+}
+
+// Custom Scrollbar Styling - WebKit Browsers
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: #2A2A2A; // --color-background-soft
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #556B2F; // --color-border
+  border-radius: 2px;
+  border: 2px solid #2A2A2A; // --color-background-soft (padding effect)
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #6B8E23; // Lighter Olive Drab (example for --color-border-hover)
+}
+
+::-webkit-scrollbar-corner {
+  background: #2A2A2A; // --color-background-soft
+}
+
+// Basic Scrollbar Styling - Firefox
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #556B2F #2A2A2A; // thumb track (--color-border --color-background-soft)
+}
+
+a,
+.link {
+  text-decoration: none;
+  color: #6A82A4; /* Accent 3 - Desaturated Blue/Steel Blue */
+  transition: color 0.3s ease, background-color 0.3s ease;
+  padding: 2px 0;
+}
+
+@media (hover: hover) {
+  a:hover,
+  .link:hover {
+    color: #EAEAEA; /* Primary Text Color on hover */
+    background-color: #3a4a5f; /* Darker shade of Accent 3 */
+  }
+}

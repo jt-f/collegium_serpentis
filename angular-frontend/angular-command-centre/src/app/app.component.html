@@ -1,0 +1,32 @@
+<div id="app-container">
+  <header class="app-header">
+    <div class="header-left">
+      <h1>Command Centre</h1>
+    </div>
+    <div class="header-right">
+      <app-frontend-client-id-display />
+    </div>
+  </header>
+  <main class="app-main">
+    <div class="main-layout">
+      <div class="left-pane">
+        <app-redis-status />
+        <app-server-connection-monitor />
+        <app-placeholder-block title="Agent Conversations" content="Chat messages will appear here." />
+        <app-placeholder-block title="Agent Network Graph" content="Network graph will be displayed here." />
+      </div>
+      <!-- The router-outlet will render HomeViewComponent or AboutViewComponent here
+           if we decide to make them full page views within this main layout.
+           Or, if they are part of a different layout, this router-outlet might be moved/removed.
+           For now, let's assume the main content (like ClientsTable) is part of HomeView.
+      -->
+    </div>
+    <!-- If ClientsTable is meant to be always visible similar to App.vue, it stays here.
+         If it's part of the HomeView, it should be moved into HomeView's template.
+         Based on App.vue, ClientsTable is outside the .main-layout but inside .app-main.
+    -->
+    <app-clients-table />
+  </main>
+</div>
+<!-- Global router outlet for primary views -->
+<router-outlet></router-outlet>
