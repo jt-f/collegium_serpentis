@@ -1,5 +1,5 @@
 <template>
-  <tr>
+  <tr :class="{ vibrating: isUpdating }">
     <td class="avatar-cell">
       <div class="avatar-placeholder" :style="{ backgroundColor: avatarColor }"></div>
     </td>
@@ -34,7 +34,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   clientData: {
@@ -42,6 +42,26 @@ const props = defineProps({
     required: true
   }
 })
+
+const isUpdating = ref(false)
+
+watch(() => props.clientData, (newData, oldData) => {
+  if (newData && oldData) {
+    // Create copies for comparison, excluding last_seen
+    const oldDataComparable = { ...oldData };
+    const newDataComparable = { ...newData };
+    delete oldDataComparable.last_seen;
+    delete newDataComparable.last_seen;
+
+    // Compare stringified versions
+    if (JSON.stringify(oldDataComparable) !== JSON.stringify(newDataComparable)) {
+      isUpdating.value = true;
+      setTimeout(() => {
+        isUpdating.value = false;
+      }, 500); // Animation duration in ms
+    }
+  }
+}, { deep: true });
 
 const emit = defineEmits(['action'])
 
@@ -72,14 +92,29 @@ function handleAction(action) {
 </script>
 
 <style scoped>
+/* Vibrate Animation */
+@keyframes vibrate {
+  0% { transform: translate(0); }
+  20% { transform: translate(-1px, 1px); }
+  40% { transform: translate(-1px, -1px); }
+  60% { transform: translate(1px, 1px); }
+  80% { transform: translate(1px, -1px); }
+  100% { transform: translate(0); }
+}
+
+.vibrating {
+  animation: vibrate 0.4s linear; /* Duration adjusted to 0.4s for subtlety */
+}
+
 td {
   vertical-align: middle;
+  /* Using theme variables for text colors now */
 }
 
 .client-id {
-  font-family: 'Courier New', monospace;
+  font-family: 'Courier New', monospace; /* Keep for "technical" feel */
   font-size: 0.85em;
-  color: #ADB5BD; /* Lighter Medium Gray */
+  color: var(--color-text-muted); /* Using theme variable */
 }
 
 .avatar-cell {
@@ -91,37 +126,40 @@ td {
   height: 30px;
   border-radius: 50%;
   display: inline-block;
-  border: 2px solid #495057; /* Subtle Gray border */
+  border: 2px solid var(--color-border); /* Using theme variable */
 }
 
 .last-seen {
   font-size: 0.85em;
-  color: #6C757D; /* Medium Gray */
+  color: var(--color-text-muted);
 }
 
 .details {
   font-size: 0.85em;
-  color: #ADB5BD; /* Lighter Medium Gray */
-  max-width: 200px;
+  color: var(--color-text);
+  max-width: 200px; /* This could be made more responsive if needed */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 
 .actions-cell {
   text-align: center;
 }
 
 .action-btn {
-  margin-right: 0.25rem;
-  margin-bottom: 0.25rem;
-  padding: 0.3rem 0.6rem;
+  margin-right: 0.25rem; /* 4px */
+  margin-bottom: 0.25rem; /* 4px */
+  padding: 0.3rem 0.6rem; /* ~5px 10px */
   font-size: 0.8em;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border); /* Default border */
   border-radius: 3px;
   cursor: pointer;
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+  color: var(--color-text); /* Default text color */
+  background-color: var(--color-background-mute); /* Default background */
 }
 
 .action-btn:last-child {
@@ -129,61 +167,65 @@ td {
 }
 
 .action-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.5; /* Theme consistent disabled opacity */
   cursor: not-allowed;
+  background-color: var(--color-background-mute);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
 }
 
+/* Specific button styles using theme colors */
 .pause-btn {
-  background-color: #D97706; /* Desaturated Amber */
-  border-color: #D97706;
-  color: #FEF3C7; /* Light amber text */
+  background-color: var(--color-accent-manila); /* Amber/Yellow */
+  border-color: var(--color-accent-manila);
+  color: var(--color-text-on-manila); /* Dark text on manila */
 }
 
 .pause-btn:hover:not(:disabled) {
-  background-color: #B45309;
-  border-color: #B45309;
+  background-color: #e0d4b3; /* Lighter Manila */
+  border-color: #e0d4b3;
 }
 
 .resume-btn {
-  background-color: #059669; /* Desaturated Green */
-  border-color: #059669;
-  color: #D1FAE5; /* Light green text */
+  background-color: var(--color-accent-green);
+  border-color: var(--color-accent-green);
+  color: var(--color-text-on-accent); /* White text on green */
 }
 
 .resume-btn:hover:not(:disabled) {
-  background-color: #047857;
-  border-color: #047857;
+  background-color: var(--color-border-hover); /* Lighter Green */
+  border-color: var(--color-border-hover);
 }
 
 .disconnect-btn {
-  background-color: #DC2626; /* Desaturated Red */
-  border-color: #DC2626;
-  color: #FEE2E2; /* Light red text */
+  background-color: var(--color-accent-red);
+  border-color: var(--color-accent-red);
+  color: var(--color-text-on-accent); /* White text on red */
 }
 
 .disconnect-btn:hover:not(:disabled) {
-  background-color: #B91C1C;
-  border-color: #B91C1C;
+  background-color: #a74444; /* Darker Red */
+  border-color: #a74444;
 }
 
-/* Status indicators */
+/* Status indicators using theme variables */
 .status-connected {
-  color: #10B981; /* Desaturated Green */
-  font-weight: 600;
+  color: var(--color-accent-green);
+  font-weight: 700;
 }
 
 .status-disconnected {
-  color: #EF4444; /* Desaturated Red */
-  font-weight: 600;
+  color: var(--color-accent-red);
+  font-weight: 700;
 }
 
 .status-paused {
-  color: #F59E0B; /* Desaturated Amber */
-  font-weight: 600;
+  color: var(--color-accent-manila); /* Amber/Manila */
+  font-weight: 700;
 }
 
 .status-unknown {
-  color: #6B7280; /* Medium Gray */
+  color: var(--color-text-muted);
   font-weight: 500;
 }
 </style>

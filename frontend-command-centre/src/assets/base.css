@@ -1,52 +1,66 @@
-/* color palette from <https://github.com/vuejs/theme> */
+/* Cold War Spy Theme Color Palette */
 :root {
-  --vt-c-white: #ffffff;
-  --vt-c-white-soft: #f8f8f8;
-  --vt-c-white-mute: #f2f2f2;
+  /* Base Colors */
+  --color-background: #1A1A1A; /* Base Background */
+  --color-background-soft: #2C2F33; /* Slightly Lighter Background (panels/cards) */
+  --color-background-mute: #222528; /* Darker accent for depth */
 
-  --vt-c-black: #181818;
-  --vt-c-black-soft: #222222;
-  --vt-c-black-mute: #282828;
+  /* Text Colors */
+  --color-text: #EAEAEA; /* Primary Text Color */
+  --color-heading: #EAEAEA; /* Primary Text Color for headings */
+  --color-text-muted: #A9A9A9; /* Lighter Muted Gray (e.g., footer) */
+  --color-text-on-accent: #FFFFFF; /* Text on darker accents */
+  --color-text-on-manila: #333333; /* Dark text for manila paper background */
 
-  --vt-c-indigo: #2c3e50;
+  /* Border Colors */
+  --color-border: #556B2F; /* Accent 2 - Olive Drab/Spy Green */
+  --color-border-hover: #6B8E23; /* Lighter Olive Drab */
 
-  --vt-c-divider-light-1: rgba(60, 60, 60, 0.29);
-  --vt-c-divider-light-2: rgba(60, 60, 60, 0.12);
-  --vt-c-divider-dark-1: rgba(84, 84, 84, 0.65);
-  --vt-c-divider-dark-2: rgba(84, 84, 84, 0.48);
+  /* Accent Colors */
+  --color-accent-red: #8C3A3A; /* Muted Red (warnings, critical) */
+  --color-accent-green: #556B2F; /* Olive Drab (secondary info, highlights) - same as border */
+  --color-accent-blue: #6A82A4; /* Desaturated Blue/Steel Blue (links, interactive) */
+  --color-accent-manila: #F5E8C7; /* Manila/Aged Paper (backgrounds) */
 
-  --vt-c-text-light-1: var(--vt-c-indigo);
-  --vt-c-text-light-2: rgba(60, 60, 60, 0.66);
-  --vt-c-text-dark-1: var(--vt-c-white);
-  --vt-c-text-dark-2: rgba(235, 235, 235, 0.64);
+  /* Original Vue Theme Variables (can be phased out if not used by components directly) */
+  --vt-c-white: #EAEAEA; /* Mapped to Primary Text for compatibility */
+  --vt-c-white-soft: #DADADA;
+  --vt-c-white-mute: #CACACA;
+
+  --vt-c-black: #1A1A1A; /* Mapped to Base Background */
+  --vt-c-black-soft: #2C2F33; /* Mapped to Lighter Background */
+  --vt-c-black-mute: #222528; /* Mapped to Muted Background */
+
+  --vt-c-indigo: #2C2F33; /* Using a theme color instead */
+
+  --vt-c-divider-light-1: rgba(85, 107, 47, 0.5); /* Olive Drab based */
+  --vt-c-divider-light-2: rgba(85, 107, 47, 0.3); /* Olive Drab based */
+  --vt-c-divider-dark-1: rgba(107, 142, 35, 0.65); /* Lighter Olive Drab based */
+  --vt-c-divider-dark-2: rgba(107, 142, 35, 0.48); /* Lighter Olive Drab based */
+
+  --vt-c-text-light-1: var(--color-text);
+  --vt-c-text-light-2: var(--color-text-muted);
+  --vt-c-text-dark-1: var(--color-text);
+  --vt-c-text-dark-2: var(--color-text-muted);
+
+  --section-gap: 160px; /* Retaining for now, may or may not be used by existing components */
 }
 
-/* semantic color variables for this project */
-:root {
-  --color-background: var(--vt-c-white);
-  --color-background-soft: var(--vt-c-white-soft);
-  --color-background-mute: var(--vt-c-white-mute);
-
-  --color-border: var(--vt-c-divider-light-2);
-  --color-border-hover: var(--vt-c-divider-light-1);
-
-  --color-heading: var(--vt-c-text-light-1);
-  --color-text: var(--vt-c-text-light-1);
-
-  --section-gap: 160px;
-}
-
+/* The theme is dark by default, so prefers-color-scheme: dark doesn't need to override much. */
+/* It can be used for minor adjustments if necessary, or if a light theme was also supported. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-background: var(--vt-c-black);
-    --color-background-soft: var(--vt-c-black-soft);
-    --color-background-mute: var(--vt-c-black-mute);
+    /* Ensure dark theme variables are explicitly set if they were different in the main :root */
+    /* In this case, the main :root is already the dark theme. */
+    --color-background: #1A1A1A;
+    --color-background-soft: #2C2F33;
+    --color-background-mute: #222528;
 
-    --color-border: var(--vt-c-divider-dark-2);
-    --color-border-hover: var(--vt-c-divider-dark-1);
+    --color-border: #556B2F;
+    --color-border-hover: #6B8E23;
 
-    --color-heading: var(--vt-c-text-dark-1);
-    --color-text: var(--vt-c-text-dark-2);
+    --color-heading: #EAEAEA;
+    --color-text: #EAEAEA;
   }
 }
 
@@ -55,7 +69,7 @@
 *::after {
   box-sizing: border-box;
   margin: 0;
-  font-weight: normal;
+  /* font-weight: normal; Removed, as Roboto Condensed has specific weights we'll use */
 }
 
 body {
@@ -63,23 +77,13 @@ body {
   color: var(--color-text);
   background: var(--color-background);
   transition:
-    color 0.5s,
-    background-color 0.5s;
-  line-height: 1.6;
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    Oxygen,
-    Ubuntu,
-    Cantarell,
-    'Fira Sans',
-    'Droid Sans',
-    'Helvetica Neue',
-    sans-serif;
-  font-size: 15px;
+    color 0.3s ease-in-out,
+    background-color 0.3s ease-in-out; /* Adjusted transition timing */
+  line-height: 1.5; /* Roboto Condensed can be tighter */
+  font-family: 'Roboto Condensed', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  font-size: 16px; /* Slightly increased base font size for Roboto Condensed */
+  font-weight: 400; /* Default weight for Roboto Condensed */
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

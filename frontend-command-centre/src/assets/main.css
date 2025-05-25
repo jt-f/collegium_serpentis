@@ -1,24 +1,45 @@
 @import './base.css';
 
+/* General body styling will be handled by App.vue's #app-container */
+/* Specific global overrides or utilities can go here if needed */
+
+a,
+.link { /* Using .link as a more generic class name if needed */
+  text-decoration: none;
+  color: #6A82A4; /* Accent 3 - Desaturated Blue/Steel Blue */
+  transition: color 0.3s ease, background-color 0.3s ease;
+  padding: 2px 0; /* Minimal padding, adjust as needed */
+}
+
+/* The .green class might be deprecated or should be re-themed if still used */
+.green {
+  text-decoration: none;
+  color: #556B2F; /* Accent 2 - Olive Drab/Spy Green */
+  transition: color 0.3s ease, background-color 0.3s ease;
+  padding: 2px 0;
+}
+
+
+@media (hover: hover) {
+  a:hover,
+  .link:hover {
+    color: #EAEAEA; /* Primary Text Color on hover for better contrast */
+    background-color: #3a4a5f; /* Darker shade of Accent 3 for background */
+  }
+
+  .green:hover {
+    color: #EAEAEA; /* Primary Text Color */
+    background-color: #3e4d20; /* Darker shade of Olive Drab */
+  }
+}
+
+/* Removing default #app and body media query styles, as App.vue handles layout */
+/*
 #app {
   max-width: 1280px;
   margin: 0 auto;
   padding: 2rem;
   font-weight: normal;
-}
-
-a,
-.green {
-  text-decoration: none;
-  color: hsla(160, 100%, 37%, 1);
-  transition: 0.4s;
-  padding: 3px;
-}
-
-@media (hover: hover) {
-  a:hover {
-    background-color: hsla(160, 100%, 37%, 0.2);
-  }
 }
 
 @media (min-width: 1024px) {
@@ -32,4 +53,37 @@ a,
     grid-template-columns: 1fr 1fr;
     padding: 0 2rem;
   }
+}
+*/
+
+/* Custom Scrollbar Styling - WebKit Browsers */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-background-soft); /* Panel background color */
+  border-radius: 0; 
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-border); /* Olive Drab */
+  border-radius: 2px;
+  border: 2px solid var(--color-background-soft); /* Padding effect */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-border-hover); /* Lighter Olive Drab */
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--color-background-soft);
+}
+
+/* Basic Scrollbar Styling - Firefox */
+/* Note: Firefox scrollbar styling is less customizable via CSS */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) var(--color-background-soft); /* thumb track */
 }

@@ -54,15 +54,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Special+Elite&display=swap');
 
 #app-container {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  font-family: 'Inter', sans-serif;
-  background-color: #212529; /* Very Dark Gray */
-  color: #F8F9FA; /* Light Gray/Off-White */
+  font-family: 'Roboto Condensed', sans-serif;
+  background-color: #1A1A1A; /* Base Background */
+  color: #EAEAEA; /* Primary Text Color */
 }
 
 .app-header {
@@ -70,20 +71,28 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 0.75rem 1.5rem;
-  background-color: #343A40; /* Dark Cool Gray */
-  border-bottom: 1px solid #495057; /* Subtle Gray */
+  background-color: var(--color-background-soft); /* Slightly Lighter Background */
+  border-bottom: 1px solid var(--color-border); /* Olive Drab/Spy Green */
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3); /* Added depth */
 }
 
 .app-header h1 {
   margin: 0;
-  font-size: 1.6rem;
-  font-weight: 600;
+  font-family: 'Special Elite', cursive;
+  font-size: 2rem; 
+  font-weight: normal; 
+  color: var(--color-heading);
+  text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.6); /* Added subtle text shadow */
 }
 
 .app-main {
   flex-grow: 1;
   padding: 1.5rem;
   overflow-y: auto;
+  /* Subtle gradient for depth */
+  background: radial-gradient(ellipse at center, 
+                              var(--color-background-soft) 0%, 
+                              var(--color-background) 70%); 
 }
 
 .main-layout {
@@ -99,15 +108,16 @@ onUnmounted(() => {
 }
 
 .right-pane {
-  flex: 2;
+  flex: 1.618; /* Approximate Golden Ratio */
 }
 
 .app-footer {
   padding: 0.75rem 1.5rem;
-  background-color: #343A40; /* Dark Cool Gray */
-  color: #6C757D; /* Medium Gray */
+  background-color: #2C2F33; /* Slightly Lighter Background */
+  color: #A9A9A9; /* Lighter Muted Gray for footer text */
   text-align: center;
-  font-size: 0.8em;
-  border-top: 1px solid #495057; /* Subtle Gray */
+  font-size: 0.85em;
+  border-top: 1px solid var(--color-border); /* Olive Drab/Spy Green */
+  box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.3); /* Added depth */
 }
 </style>
