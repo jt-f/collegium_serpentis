@@ -1,10 +1,13 @@
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from src.server.redis_manager import (
     cleanup_disconnected_clients,
@@ -21,6 +24,26 @@ from src.shared.utils.logging import get_logger
 
 # Initialize logger
 logger = get_logger(__name__)
+
+# Define frontend directory path
+# Assumes 'frontend-command-centre' is at the root of the workspace,
+# and 'server.py' is in 'src/server/'
+FRONTEND_BUILD_DIR = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__), "..", "..", "frontend-command-centre", "dist"
+    )
+)
+if not os.path.exists(FRONTEND_BUILD_DIR):
+    logger.warning(
+        f"Frontend build directory not found: {FRONTEND_BUILD_DIR}. "
+        "The frontend will not be served until it is built and "
+        "placed in the correct location."
+    )
+elif not os.path.exists(os.path.join(FRONTEND_BUILD_DIR, "index.html")):
+    logger.warning(
+        f"index.html not found in frontend build directory: {FRONTEND_BUILD_DIR}. "
+        "The frontend may not be served correctly."
+    )
 
 # Dictionary to keep track of active WebSocket connections
 active_connections: dict[str, WebSocket] = {}
@@ -44,6 +67,23 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
+
+# CORS middleware
+# This allows the frontend (e.g., from http://localhost:5173) to make requests
+# to this backend.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite default dev port
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",  # Common React dev port (e.g. Create React App)
+        "http://127.0.0.1:3000",
+        # Add your production frontend URL here when you deploy
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all standard HTTP methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 
 @app.websocket("/ws")
@@ -365,3 +405,15 @@ async def resume_client(client_id: str):
 async def health_check():
     """Returns a simple health check response."""
     return {"status": "ok", "redis_status": status_store.get("redis", "unknown")}
+
+
+# Mount static files for the React frontend
+# This should be the LAST mounted path to act as a catch-all for Single Page Applications.
+# It will serve 'index.html' for paths that are not API routes,
+# allowing React Router to handle client-side navigation.
+# It also serves other static assets (JS, CSS, images) from the FRONTEND_BUILD_DIR.
+app.mount(
+    "/",
+    StaticFiles(directory=FRONTEND_BUILD_DIR, html=True),
+    name="static-frontend",
+)

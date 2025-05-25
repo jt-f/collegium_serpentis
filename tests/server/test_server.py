@@ -412,14 +412,22 @@ class TestClientControlAPI:
         )
 
 
-def test_root_endpoint_not_found(test_client):
-    """Test that the root endpoint returns 404 since we don't serve static files."""
-    response = test_client.get("/")
-    assert response.status_code == 404
+def test_root_endpoint_serves_frontend(test_client, monkeypatch):
+    """Test that the root endpoint serves the frontend (e.g., index.html)."""
+    # To make this test robust, we should ensure StaticFiles has something to serve.
+    # We can mock os.path.exists for FRONTEND_BUILD_DIR and the index.html within it.
+    with patch("src.server.server.os.path.exists") as mock_path_exists:
+        mock_path_exists.return_value = True  # Assume build dir and index.html exist
+        response = test_client.get("/")
+    assert response.status_code == 200
+    # Optionally, check for content type if index.html is served
+    assert "text/html" in response.headers.get("content-type", "")
 
 
 def test_static_files_not_served(test_client):
-    """Test that static file requests return 404 since we don't serve static files."""
+    """Test that an arbitrary static file path not configured returns 404."""
+    # This path is not expected to be served by StaticFiles mounted at "/"
+    # unless there's a FRONTEND_BUILD_DIR/static/status_display.html
     response = test_client.get("/static/status_display.html")
     assert response.status_code == 404
 
