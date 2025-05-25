@@ -55,54 +55,63 @@ const connectionText = computed(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 0.25rem;
+  gap: 0.2rem; /* Slightly reduced gap */
+  padding: 0.3rem 0.6rem; /* ~5px 10px */
+  background-color: var(--color-background); /* Darker background for a "tag" feel */
+  border: 1px solid var(--color-border); /* Olive drab border */
+  border-radius: 3px;
+  box-shadow: inset 0 0 3px rgba(0,0,0,0.3); /* Subtle inner shadow for depth */
 }
 
 .connection-indicator {
-  font-size: 0.8em;
+  font-size: 0.75em; /* Slightly smaller */
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.3rem; /* Adjusted gap */
+}
+
+.connection-indicator .indicator-dot {
+  width: 8px; /* Small dot */
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
 }
 
 .client-id-text {
-  font-size: 0.85em;
-  color: #ADB5BD; /* Lighter variant of Medium Gray */
+  font-size: 0.8em; /* Slightly smaller */
+  color: var(--color-text-muted); /* Label color */
 }
 
 .client-id-text span {
-  font-weight: 600;
-  color: #F8F9FA;
+  font-weight: 700; /* Bolder ID */
+  color: var(--color-text); /* Brighter color for ID */
   font-family: 'Courier New', monospace;
+  margin-left: 0.25rem; /* Space between label and ID */
 }
 
-.connection-connected {
-  color: #10B981; /* Desaturated Green */
-}
+/* Connection status colors using theme variables */
+.connection-connected .indicator-dot { background-color: var(--color-accent-green); }
+.connection-connected { color: var(--color-accent-green); }
 
-.connection-connecting {
-  color: #F59E0B; /* Desaturated Amber */
-  animation: pulse 1.5s ease-in-out infinite alternate;
+.connection-connecting .indicator-dot { 
+  background-color: var(--color-accent-manila);
+  animation: pulse-yellow 1.2s infinite; /* Consistent with ServerConnectionMonitor */
 }
+.connection-connecting { color: var(--color-accent-manila); }
 
-.connection-disconnected {
-  color: #6B7280; /* Medium Gray */
-}
+.connection-disconnected .indicator-dot { background-color: var(--color-text-muted); }
+.connection-disconnected { color: var(--color-text-muted); }
 
-.connection-error {
-  color: #EF4444; /* Desaturated Red */
-}
+.connection-error .indicator-dot { background-color: var(--color-accent-red); }
+.connection-error { color: var(--color-accent-red); }
 
-.connection-unknown {
-  color: #6B7280; /* Medium Gray */
-}
+.connection-unknown .indicator-dot { background-color: var(--color-text-muted); }
+.connection-unknown { color: var(--color-text-muted); }
 
-@keyframes pulse {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0.5;
-  }
+
+/* Re-define pulse-yellow if not globally available or imported from ServerConnectionMonitor */
+@keyframes pulse-yellow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.1); }
 }
 </style>

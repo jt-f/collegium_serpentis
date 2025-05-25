@@ -14,18 +14,41 @@ defineProps({
 
 <style scoped>
 .status-block {
-  padding: 1rem;
-  border: 1px solid #ddd; /* Placeholder */
+  padding: 1rem; /* 16px */
+  border: 1px solid var(--color-border); /* Olive Drab/Spy Green */
   border-radius: 4px;
-  background-color: #fff;
+  background-color: var(--color-background-soft); /* Slightly Lighter Background */
+  position: relative; /* For pseudo-element positioning */
+  overflow: hidden; /* To contain the pseudo-element if it bleeds */
 }
+
+/* "Classified Stamp" motif - consistent with ClientsTable.vue */
+.status-block::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-left: 30px solid transparent; /* Adjust size as needed */
+  border-top: 30px solid rgba(140, 58, 58, 0.6); /* --color-accent-red (#8C3A3A) with alpha */
+}
+
 .placeholder-block h3 {
   margin-top: 0;
-  font-size: 1.1rem;
-  color: #333; /* Placeholder */
+  margin-bottom: 0.5rem; /* 8px */
+  font-family: 'Special Elite', cursive; /* Thematic font for titles */
+  font-size: 1.3rem; /* Adjusted for Special Elite */
+  font-weight: normal; /* Special Elite is often bold by default */
+  color: var(--color-heading);
+  padding-bottom: 0.25rem; /* 4px, subtle separation */
+  border-bottom: 1px dashed var(--color-text-muted); /* Dashed line for a "placeholder" or "field label" feel */
 }
+
 .placeholder-block p {
-  font-size: 0.9em;
-  color: #555; /* Placeholder */
+  font-size: 0.9rem;
+  color: var(--color-text);
+  line-height: 1.4;
+  margin-bottom: 0; /* Remove default p margin if not needed */
 }
 </style>

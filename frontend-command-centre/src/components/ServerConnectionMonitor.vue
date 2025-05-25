@@ -109,21 +109,36 @@ function formatTime(isoString) {
 
 <style scoped>
 .status-block {
-  padding: 1rem 1.5rem;
-  border: 1px solid #495057; /* Subtle Gray */
+  padding: 1rem 1.5rem; /* 16px 24px */
+  border: 1px solid var(--color-border); /* Olive Drab/Spy Green */
   border-radius: 4px;
-  background-color: #343A40; /* Dark Cool Gray */
-  margin-top: 1rem;
+  background-color: var(--color-background-soft); /* Slightly Lighter Background */
+  margin-top: 1rem; /* Consistent with other blocks */
+  position: relative; /* For pseudo-element positioning */
+  overflow: hidden; /* To contain the pseudo-element if it bleeds */
+}
+
+/* "Classified Stamp" motif */
+.status-block::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-left: 30px solid transparent; /* Adjust size as needed */
+  border-top: 30px solid rgba(140, 58, 58, 0.6); /* --color-accent-red (#8C3A3A) with alpha */
 }
 
 .status-block h3 {
   margin-top: 0;
-  margin-bottom: 0.5rem;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #F8F9FA;
-  border-bottom: 1px solid #495057;
-  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem; /* 8px */
+  font-family: 'Special Elite', cursive; /* Thematic font for titles */
+  font-size: 1.3rem; /* Adjusted for Special Elite */
+  font-weight: normal; /* Special Elite is often bold by default */
+  color: var(--color-heading);
+  padding-bottom: 0.25rem; /* 4px, subtle separation */
+  border-bottom: 1px dashed var(--color-text-muted); /* Dashed line for a "field label" feel */
 }
 
 .connection-details {
@@ -133,159 +148,167 @@ function formatTime(isoString) {
 .connection-status {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
+  gap: 0.5rem; /* 8px */
+  margin-bottom: 0.5rem; /* 8px */
 }
 
 .status-indicator {
-  width: 12px;
-  height: 12px;
+  width: 10px; /* Slightly smaller */
+  height: 10px;
   border-radius: 50%;
   display: inline-block;
   position: relative;
+  /* Remove box-shadow from base, apply per state if needed */
 }
 
 .indicator-connected {
-  background-color: #10B981; /* Desaturated Green */
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+  background-color: var(--color-accent-green);
+  animation: pulse-green 2s infinite;
 }
 
 .indicator-connecting {
-  background-color: #F59E0B; /* Desaturated Amber */
-  animation: pulse 1.5s ease-in-out infinite;
+  background-color: var(--color-accent-manila); /* Using Manila for yellow/amber */
+  animation: pulse-yellow 1.2s infinite;
 }
 
 .indicator-disconnected {
-  background-color: #6B7280; /* Medium Gray */
+  background-color: var(--color-text-muted);
 }
 
 .indicator-error {
-  background-color: #EF4444; /* Desaturated Red */
-  animation: pulse 2s ease-in-out infinite;
+  background-color: var(--color-accent-red);
+  animation: pulse-red 2.5s infinite;
 }
 
-.indicator-unknown {
-  background-color: #D97706; /* Desaturated Amber */
+.indicator-unknown { /* Covers 'initial' state from store */
+  background-color: var(--color-text-muted);
 }
 
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.6;
-    transform: scale(1.1);
-  }
+@keyframes pulse-green {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--color-accent-green); }
+  50% { opacity: 0.7; box-shadow: 0 0 7px var(--color-accent-green); }
+}
+
+@keyframes pulse-yellow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.1); }
+}
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .status-text {
-  font-weight: 600;
+  font-weight: 700; /* Bolder text for status */
   font-size: 0.95rem;
 }
 
 .status-connected {
-  color: #10B981; /* Desaturated Green */
+  color: var(--color-accent-green);
 }
 
 .status-connecting {
-  color: #F59E0B; /* Desaturated Amber */
+  color: var(--color-accent-manila); /* Using Manila */
 }
 
 .status-disconnected {
-  color: #6B7280; /* Medium Gray */
+  color: var(--color-text-muted);
 }
 
 .status-error {
-  color: #EF4444; /* Desaturated Red */
+  color: var(--color-accent-red);
 }
 
 .status-unknown {
-  color: #D97706; /* Desaturated Amber */
+  color: var(--color-text-muted);
 }
 
 .reconnect-info {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.5rem; /* 8px */
   font-size: 0.85rem;
-  color: #10B981; /* Desaturated Green */
-  background-color: rgba(16, 185, 129, 0.1);
+  color: var(--color-accent-green);
+  background-color: rgba(85, 107, 47, 0.2); /* Accent Green with low alpha */
   padding: 0.4rem 0.6rem;
   border-radius: 3px;
-  margin-top: 0.5rem;
+  margin-top: 0.5rem; /* 8px */
 }
 
 .success-indicator {
   font-weight: bold;
-  color: #10B981;
+  color: var(--color-accent-green);
 }
 
 .error-details {
-  background-color: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  background-color: rgba(140, 58, 58, 0.15); /* Accent Red with low alpha */
+  border: 1px solid rgba(140, 58, 58, 0.3);
   border-radius: 4px;
-  padding: 0.75rem;
-  margin-top: 0.5rem;
+  padding: 0.75rem; /* 12px */
+  margin-top: 0.5rem; /* 8px */
 }
 
 .error-message {
-  color: #EF4444;
-  font-weight: 600;
+  color: var(--color-accent-red);
+  font-weight: 700;
   margin: 0 0 0.5rem 0;
   font-size: 0.9rem;
 }
 
 .error-suggestion {
-  color: #F8F9FA;
+  color: var(--color-text); /* Primary text color */
   margin: 0 0 0.75rem 0;
   font-size: 0.85rem;
 }
 
 .error-suggestion code {
-  background-color: #495057;
+  background-color: var(--color-background); /* Base background for code */
+  color: var(--color-text-muted);
   padding: 0.2rem 0.4rem;
   border-radius: 2px;
-  font-family: 'Courier New', monospace;
+  font-family: 'Courier New', monospace; /* Keep monospace for code */
   font-size: 0.8rem;
+  border: 1px solid var(--color-border);
 }
 
 .retry-btn {
-  background-color: #EF4444;
-  border: 1px solid #EF4444;
-  color: #FEF2F2;
+  background-color: var(--color-accent-red);
+  border: 1px solid var(--color-accent-red);
+  color: var(--color-text-on-accent); /* White text on red */
   padding: 0.4rem 0.8rem;
   border-radius: 3px;
   cursor: pointer;
   font-size: 0.8rem;
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .retry-btn:hover:not(:disabled) {
-  background-color: #DC2626;
-  border-color: #DC2626;
+  background-color: #a74444; /* Darker Accent Red */
+  border-color: #a74444;
 }
 
 .retry-btn:disabled {
-  opacity: 0.6;
+  background-color: var(--color-accent-red); /* Keep color but change opacity */
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .connecting-info {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.5rem; /* 8px */
   font-size: 0.85rem;
-  color: #F59E0B;
-  background-color: rgba(245, 158, 11, 0.1);
+  color: var(--color-accent-manila); /* Using Manila */
+  background-color: rgba(245, 232, 199, 0.1); /* Manila with low alpha */
   padding: 0.4rem 0.6rem;
   border-radius: 3px;
-  margin-top: 0.5rem;
+  margin-top: 0.5rem; /* 8px */
 }
 
 .connecting-spinner {
-  animation: spin 2s linear infinite;
+  animation: spin 1.5s linear infinite; /* Slightly faster spin */
 }
 
 @keyframes spin {
@@ -295,9 +318,9 @@ function formatTime(isoString) {
 
 .last-update {
   font-size: 0.8em;
-  color: #6C757D; /* Medium Gray */
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid #495057;
+  color: var(--color-text-muted);
+  margin-top: 0.5rem; /* 8px */
+  padding-top: 0.5rem; /* 8px */
+  border-top: 1px solid var(--color-border); /* Use theme border color */
 }
-</style> 
+</style>

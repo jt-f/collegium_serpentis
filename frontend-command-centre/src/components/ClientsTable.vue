@@ -96,83 +96,110 @@ async function handleClientAction({ action, clientId }) {
 
 <style scoped>
 .status-block {
-  padding: 1rem 1.5rem;
-  border: 1px solid #495057; /* Subtle Gray */
+  padding: 1rem 1.5rem; /* 16px 24px */
+  border: 1px solid var(--color-border); /* Olive Drab/Spy Green */
   border-radius: 4px;
-  background-color: #343A40; /* Dark Cool Gray */
+  background-color: var(--color-background-soft); /* Slightly Lighter Background */
+  position: relative; /* For pseudo-element positioning */
+  overflow: hidden; /* To contain the pseudo-element if it bleeds */
 }
+
+/* "Classified Stamp" motif */
+.status-block::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-left: 30px solid transparent; /* Adjust size as needed */
+  border-top: 30px solid rgba(140, 58, 58, 0.6); /* --color-accent-red (#8C3A3A) with alpha */
+  /* To make it look like a corner stamp, an alternative would be:
+  transform: rotate(45deg);
+  top: -15px;
+  right: -15px;
+  width: 30px;
+  height: 30px;
+  background-color: rgba(140, 58, 58, 0.6);
+  */
+}
+
 
 .clients-table h2 {
   margin-top: 0;
-  margin-bottom: 1rem;
-  font-size: 1.3rem;
-  font-weight: 600;
-  color: #F8F9FA; /* Light Gray/Off-White */
-  border-bottom: 1px solid #495057;
-  padding-bottom: 0.5rem;
+  margin-bottom: 1rem; /* 16px */
+  font-size: 1.4rem; /* Slightly increased for 'Special Elite' if it were used here, but it's Roboto Condensed */
+  font-weight: 700; /* Bolder for Roboto Condensed heading */
+  color: var(--color-heading);
+  border-bottom: 2px solid var(--color-text-muted); /* "Redacted" line style */
+  padding-bottom: 0.5rem; /* 8px - Fibonacci */
 }
 
 .connection-warning {
-  background-color: #856404; /* Darker amber background */
-  border: 1px solid #D97706; /* Desaturated Amber */
+  background-color: var(--color-accent-red); /* Muted Red */
+  border: 1px solid var(--color-text-on-manila); /* Darker border for contrast */
   border-radius: 4px;
-  padding: 0.75rem;
-  margin-bottom: 1rem;
+  padding: 0.75rem; /* 12px */
+  margin-bottom: 1rem; /* 16px */
 }
 
 .connection-warning p {
   margin: 0;
-  color: #FEF3C7; /* Light amber text */
+  color: var(--color-text-on-accent); /* White text on red background */
   font-weight: 500;
 }
 
 .retry-btn {
-  background-color: #6C757D; /* Medium Gray */
-  color: #F8F9FA; /* Light Gray/Off-White */
-  border: none;
-  padding: 0.5rem 1rem;
+  background-color: var(--color-background-mute); /* Darker accent */
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 1rem; /* 8px 16px */
   border-radius: 4px;
   cursor: pointer;
-  margin-top: 0.5rem;
+  margin-top: 0.5rem; /* 8px */
+  transition: background-color 0.3s ease, border-color 0.3s ease;
 }
 
 .retry-btn:hover {
-  background-color: #5A6268; /* Slightly lighter Medium Gray */
+  background-color: var(--color-border);
+  border-color: var(--color-border-hover);
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 1rem;
+  margin-top: 1rem; /* 16px */
 }
 
 th, td {
-  border: 1px solid #495057; /* Subtle Gray */
-  padding: 0.75rem;
+  border: 1px solid var(--color-border); /* Olive Drab */
+  padding: 0.625rem 0.75rem; /* 10px 12px, adjusted for Fibonacci feel */
   text-align: left;
-  font-size: 0.9em;
+  font-size: 0.9rem; /* Maintained from original */
 }
 
 th {
-  background-color: #495057; /* Subtle Gray */
-  font-weight: 600;
-  color: #F8F9FA; /* Light Gray/Off-White */
+  background-color: var(--color-background-mute); /* Darker accent */
+  font-weight: 700; /* Bolder for table headers */
+  color: var(--color-heading);
+  font-family: 'Roboto Condensed', sans-serif; /* Ensure consistency */
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.4); /* Subtle shadow for depth */
 }
 
 td {
-  background-color: #212529; /* Very Dark Gray */
-  color: #F8F9FA; /* Light Gray/Off-White */
+  background-color: var(--color-background); /* Base background for cells */
+  color: var(--color-text);
 }
 
 .no-clients-message {
   text-align: center;
-  color: #6C757D; /* Medium Gray */
-  padding: 2rem;
+  color: var(--color-text-muted); /* Muted gray */
+  padding: 1.5rem; /* 24px */
   font-style: italic;
 }
 
 /* Hover effect for table rows */
 tbody tr:hover td {
-  background-color: #2C3034; /* Slightly lighter than Very Dark Gray */
+  background-color: var(--color-background-soft); /* Slightly Lighter Background */
 }
 </style>
