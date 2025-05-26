@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronUp, Smartphone, HardDrive, Cpu, MemoryStick, Wifi, AlertCircle, CheckCircle2, XCircle, PowerOff } from 'lucide-react';
+import { ChevronDown, ChevronUp, Smartphone, HardDrive, Cpu, MemoryStick, Wifi, AlertCircle, CheckCircle2, XCircle, PowerOff, Play, Pause, X } from 'lucide-react';
 
 const getStatusClasses = (clientData) => {
   if (clientData.connected !== 'true') {
@@ -33,17 +33,39 @@ const getStatusIcon = (clientData) => {
   }
 };
 
-const ClientRow = ({ client }) => {
+const ClientRow = ({ client, onClientAction }) => {
   const [expanded, setExpanded] = React.useState(false);
+
+  const canPause = client.connected === 'true' && client.client_state === 'running';
+  const canResume = client.connected === 'true' && client.client_state === 'paused';
+  const canDisconnect = client.connected === 'true';
+
+  const handleAction = (e, action) => {
+    e.stopPropagation();
+    onClientAction(client.client_id, action);
+  };
+
+  const displayName = client.client_name || client.client_id || 'N/A';
+  const clientIdTooltip = `ID: ${client.client_id || 'Unknown'}`;
+
+  let displayTime = 'N/A';
+  if (client.connected !== 'true' && client.disconnect_time) {
+    displayTime = new Date(client.disconnect_time).toLocaleString();
+  } else if (client.last_seen) {
+    displayTime = new Date(client.last_seen).toLocaleString();
+  } else if (client.connect_time) {
+    displayTime = new Date(client.connect_time).toLocaleString();
+  }
 
   return (
     <>
       <tr
-        className="border-b border-slate-700 hover:bg-slate-700/50 transition-colors duration-150 cursor-pointer"
+        className={`border-b border-slate-700 hover:bg-slate-700/50 transition-colors duration-150 cursor-pointer ${client.recentlyUpdated ? 'animate-pulse bg-purple-500/10' : ''
+          }`}
         onClick={() => setExpanded(!expanded)}
         tabIndex={0}
         aria-expanded={expanded}
-        aria-label={`Client ${client.name || client.client_id}, status ${client.connected === 'true' ? client.client_state || 'connected' : 'disconnected'}. Click to ${expanded ? 'collapse' : 'expand'} details.`}
+        aria-label={`Client ${displayName}, status ${client.connected === 'true' ? client.client_state || 'connected' : 'disconnected'}. Click to ${expanded ? 'collapse' : 'expand'} details.`}
         onKeyDown={(e) => e.key === 'Enter' && setExpanded(!expanded)}
       >
         <td className="px-4 py-3 whitespace-nowrap">
@@ -54,13 +76,48 @@ const ClientRow = ({ client }) => {
               : 'Disconnected'}
           </div>
         </td>
-        <td className="px-4 py-3 font-medium text-purple-300 whitespace-nowrap">{client.client_id || client.name}</td>
-        <td className="px-4 py-3 text-slate-400 whitespace-nowrap">{client.type || 'N/A'}</td>
+        <td
+          className="px-4 py-3 font-medium text-purple-300 whitespace-nowrap"
+          title={clientIdTooltip}
+        >
+          {displayName}
+        </td>
+        <td className="px-4 py-3 text-slate-400 whitespace-nowrap">{client.client_type || client.type || 'N/A'}</td>
         <td className="px-4 py-3 text-sky-400 whitespace-nowrap">{client.ip_address || 'N/A'}</td>
         <td className="px-4 py-3 text-slate-400 whitespace-nowrap">
-          {client.disconnect_time
-            ? new Date(client.disconnect_time).toLocaleString()
-            : (client.connect_time ? new Date(client.connect_time).toLocaleString() : 'N/A')}
+          {displayTime}
+        </td>
+        <td className="px-4 py-3 whitespace-nowrap text-right">
+          {canPause && (
+            <button
+              onClick={(e) => handleAction(e, 'pause')}
+              className="p-1.5 text-yellow-400 hover:text-yellow-300 disabled:text-slate-600"
+              aria-label={`Pause client ${client.client_id}`}
+              title="Pause Client"
+            >
+              <Pause size={18} />
+            </button>
+          )}
+          {canResume && (
+            <button
+              onClick={(e) => handleAction(e, 'resume')}
+              className="p-1.5 text-green-400 hover:text-green-300 disabled:text-slate-600"
+              aria-label={`Resume client ${client.client_id}`}
+              title="Resume Client"
+            >
+              <Play size={18} />
+            </button>
+          )}
+          {canDisconnect && (
+            <button
+              onClick={(e) => handleAction(e, 'disconnect')}
+              className="p-1.5 text-red-500 hover:text-red-400 disabled:text-slate-600 ml-1"
+              aria-label={`Disconnect client ${client.client_id}`}
+              title="Disconnect Client"
+            >
+              <XCircle size={18} />
+            </button>
+          )}
         </td>
         <td className="px-4 py-3 text-slate-300 whitespace-nowrap">
           {expanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
@@ -99,7 +156,7 @@ const ClientRow = ({ client }) => {
   );
 };
 
-const ClientTable = ({ clients, isLoading, error, redisStatus }) => {
+const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus, */ onClientAction }) => {
   if (isLoading) {
     return <p className="text-center text-slate-400 py-8">Loading client data...</p>;
   }
@@ -108,13 +165,16 @@ const ClientTable = ({ clients, isLoading, error, redisStatus }) => {
     return <p className="text-center text-red-400 py-8">Error fetching data: {error}</p>;
   }
 
-  const clientList = Object.values(clients);
+  const clientList = Object.entries(clients || {}).map(([id, data]) => ({
+    ...data,
+    client_id: id
+  }));
 
   if (clientList.length === 0) {
     return (
       <div className="bg-slate-800 p-6 rounded-xl shadow-xl flex-grow flex flex-col min-h-[400px]">
         <h2 className="text-2xl font-semibold text-purple-400 mb-6">Registered Clients</h2>
-        <p className="text-center text-slate-400 py-8">No client data available. Redis status: {redisStatus}</p>
+        <p className="text-center text-slate-400 py-8">No client data available.</p>
       </div>
     );
   }
@@ -123,9 +183,6 @@ const ClientTable = ({ clients, isLoading, error, redisStatus }) => {
     <div className="bg-slate-800 p-6 rounded-xl shadow-xl flex-grow flex flex-col min-h-[400px]">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-2xl font-semibold text-purple-400">Registered Clients</h2>
-        <span className={`text-xs px-2 py-1 rounded-full ${redisStatus === 'connected' ? 'bg-green-500/30 text-green-300' : 'bg-red-500/30 text-red-300'}`}>
-          Redis: {redisStatus}
-        </span>
       </div>
       <div className="overflow-x-auto flex-grow rounded-lg scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-700">
         <table className="min-w-full divide-y divide-slate-700">
@@ -136,16 +193,13 @@ const ClientTable = ({ clients, isLoading, error, redisStatus }) => {
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Type</th>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">IP Address</th>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Last Seen</th>
+              <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Actions</th>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider"></th>
             </tr>
           </thead>
           <tbody className="bg-slate-800 divide-y divide-slate-700">
-            {clientList.map((client, index) => {
-              if (!client || typeof client.client_id === 'undefined') {
-                console.warn('ClientTable: Rendering ClientRow with potentially problematic client data or client_id:', client, 'at index:', index);
-              }
-              const key = client && client.client_id ? client.client_id : `client-row-${index}`;
-              return <ClientRow key={key} client={client} />;
+            {clientList.map((client) => {
+              return <ClientRow key={client.client_id} client={client} onClientAction={onClientAction} />;
             })}
           </tbody>
         </table>

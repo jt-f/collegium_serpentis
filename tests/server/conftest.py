@@ -24,16 +24,22 @@ def test_client(test_app: FastAPI) -> TestClient:
 @pytest.fixture
 def mock_redis() -> Generator[AsyncMock]:
     """Create a mock Redis client."""
-    with patch("src.server.redis_manager.redis_client", new_callable=AsyncMock) as mock:
-        # Configure hset to return a value (typically the number of fields updated)
-        mock.hset = AsyncMock(return_value=1)
-        # Use MagicMock for scan_iter to return async iterator directly, not as coroutine
-        mock.scan_iter = MagicMock()
-        mock.hgetall = AsyncMock()
-        mock.delete = AsyncMock()
-        # Configure ping to succeed by default
-        mock.ping = AsyncMock(return_value=True)
-        yield mock
+    # Patch initialize_redis to prevent actual Redis connection setup during tests
+    # and to ensure our mock_rc is used as redis_manager.redis_client.
+    with patch(
+        "src.server.redis_manager.initialize_redis", AsyncMock(return_value=None)
+    ), patch(
+        "src.server.redis_manager.redis_client", new_callable=AsyncMock
+    ) as mock_rc:
+        mock_rc.hset = AsyncMock(return_value=1)
+        mock_rc.scan_iter = MagicMock()
+        mock_rc.hgetall = AsyncMock(return_value={})
+        mock_rc.delete = AsyncMock(return_value=1)
+        mock_rc.ping = AsyncMock(return_value=True)
+        # Ensure that the redis_client is indeed our mock_rc if initialize_redis was not called
+        # or if it was called but did nothing (due to being mocked by mock_init).
+        # The primary patch on redis_client should ensure it IS mock_rc.
+        yield mock_rc  # Yield the mock_rc that replaced redis_client
 
 
 @pytest.fixture
