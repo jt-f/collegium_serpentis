@@ -1,13 +1,56 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
 
 @layer components {
     .sidebar-icon {
-        @apply relative flex items-center justify-center h-12 w-12 mt-2 mb-2 mx-auto shadow-lg bg-slate-700 text-purple-400 hover:bg-purple-600 hover:text-white rounded-3xl hover:rounded-xl transition-all duration-300 ease-linear cursor-pointer;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 3rem;
+        width: 3rem;
+        margin-top: 0.5rem;
+        margin-bottom: 0.5rem;
+        margin-left: auto;
+        margin-right: auto;
+        box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        background-color: rgb(51 65 85);
+        color: rgb(192 132 252);
+        border-radius: 1.5rem;
+        cursor: pointer;
+        transition-property: all;
+        transition-timing-function: linear;
+        transition-duration: 300ms;
     }
 
     .sidebar-tooltip {
-        @apply absolute w-auto p-2 m-2 min-w-max left-20 rounded-md shadow-md text-white bg-slate-800 text-xs font-bold transition-all duration-100 scale-0 origin-left;
+        position: absolute;
+        width: auto;
+        padding: 0.5rem;
+        margin: 0.5rem;
+        min-width: max-content;
+        left: 5rem;
+        border-radius: 0.375rem;
+        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        color: white;
+        background-color: rgb(30 41 59);
+        font-size: 0.75rem;
+        font-weight: bold;
+        transition: all 100ms;
+        transform: scale(0);
+        transform-origin: left;
     }
+}
+
+@keyframes shudder {
+  0% { transform: translateX(0); box-shadow: 0 0 0px rgba(255, 255, 255, 0); }
+  25% { transform: translateX(-4px); box-shadow: 0 0 10px rgba(205, 227, 10, 0.7); }
+  50% { transform: translateX(4px); box-shadow: 0 0 0px rgba(255, 255, 255, 0); }
+  75% { transform: translateX(-4px); box-shadow: 0 0 10px rgba(189, 3, 235, 0.7); }
+  100% { transform: translateX(0); box-shadow: 0 0 0px rgba(255, 255, 255, 0); }
+}
+
+.animate-shudder {
+  animation: shudder 0.3s ease-in-out;
 }
