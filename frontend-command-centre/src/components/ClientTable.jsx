@@ -60,8 +60,7 @@ const ClientRow = ({ client, onClientAction }) => {
   return (
     <>
       <tr
-        className={`border-b border-slate-700 hover:bg-slate-700/50 transition-colors duration-150 cursor-pointer ${client.recentlyUpdated ? 'animate-pulse bg-purple-500/10' : ''
-          }`}
+        className={`border-b border-slate-700 hover:bg-slate-700/50 transition-colors duration-150 cursor-pointer ${client.recentlyUpdated ? 'animate-shudder bg-purple-500/10' : ''}`}
         onClick={() => setExpanded(!expanded)}
         tabIndex={0}
         aria-expanded={expanded}
@@ -185,8 +184,8 @@ const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus
         <h2 className="text-2xl font-semibold text-purple-400">Registered Clients</h2>
       </div>
       <div className="overflow-x-auto flex-grow rounded-lg scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-700">
-        <table className="min-w-full divide-y divide-slate-700">
-          <thead className="bg-slate-700/50 sticky top-0 z-10">
+        <table className="min-w-full divide-y divide-slate-700 border border-slate-600 rounded-lg overflow-hidden">
+          <thead className="bg-slate-700/70 sticky top-0 z-10">
             <tr>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Status</th>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Name</th>
@@ -208,4 +207,4 @@ const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus
   );
 };
 
-export default ClientTable; 
+export default ClientTable;

@@ -178,3 +178,6 @@ cython_debug/
 
 # notes
 notes/*
+
+# trae
+.trae/
