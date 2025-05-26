@@ -21,30 +21,11 @@ from src.server.redis_manager import (
     status_store,
     update_client_status,
 )
+from src.shared.utils.config import FRONTEND_BUILD_DIR, CORS_ALLOWED_ORIGINS # Updated import
 from src.shared.utils.logging import get_logger
 
 # Initialize logger
 logger = get_logger(__name__)
-
-# Define frontend directory path
-# Assumes 'frontend-command-centre' is at the root of the workspace,
-# and 'server.py' is in 'src/server/'
-FRONTEND_BUILD_DIR = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__), "..", "..", "frontend-command-centre", "dist"
-    )
-)
-if not os.path.exists(FRONTEND_BUILD_DIR):
-    logger.warning(
-        f"Frontend build directory not found: {FRONTEND_BUILD_DIR}. "
-        "The frontend will not be served until it is built and "
-        "placed in the correct location."
-    )
-elif not os.path.exists(os.path.join(FRONTEND_BUILD_DIR, "index.html")):
-    logger.warning(
-        f"index.html not found in frontend build directory: {FRONTEND_BUILD_DIR}. "
-        "The frontend may not be served correctly."
-    )
 
 # Store active connections, distinguishing between roles
 worker_connections: dict[str, WebSocket] = {}
@@ -127,13 +108,7 @@ app = FastAPI(lifespan=lifespan)
 # to this backend.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite default dev port
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",  # Common React dev port (e.g. Create React App)
-        "http://127.0.0.1:3000",
-        # Add your production frontend URL here when you deploy
-    ],
+    allow_origins=CORS_ALLOWED_ORIGINS, # Updated to use the imported variable
     allow_credentials=True,
     allow_methods=["*"],  # Allows all standard HTTP methods
     allow_headers=["*"],  # Allows all headers
