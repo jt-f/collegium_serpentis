@@ -22,7 +22,7 @@ const getStatusIcon = (status) => {
     }
 };
 
-const StatusOverview = ({ clients: clientsObj, isLoading, error, redisStatus }) => {
+const StatusOverview = ({ clients: clientsObj, isLoading, error, redisStatus, wsStatus }) => {
     if (isLoading) {
         return (
             <div className="bg-slate-800 p-6 rounded-xl shadow-xl flex items-center justify-center min-h-[200px]">
@@ -66,9 +66,16 @@ const StatusOverview = ({ clients: clientsObj, isLoading, error, redisStatus }) 
         <div className="bg-slate-800 p-6 rounded-xl shadow-xl">
             <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-semibold text-purple-400">System Status</h2>
-                <span className={`text-xs px-2 py-1 rounded-full ${redisStatus === 'connected' ? 'bg-green-500/30 text-green-300' : 'bg-red-500/30 text-red-300'}`}>
-                    Redis: {redisStatus}
-                </span>
+                <div className="flex items-center space-x-2">
+                    <span className={`text-xs px-2 py-1 rounded-full ${redisStatus === 'connected' ? 'bg-green-500/30 text-green-300' : 'bg-red-500/30 text-red-300'}`}>
+                        Redis: {redisStatus}
+                    </span>
+                    <span className={`text-xs px-2 py-1 rounded-full 
+                        ${wsStatus === 'connected' ? 'bg-sky-500/30 text-sky-300' :
+                            wsStatus === 'connecting' ? 'bg-amber-500/30 text-amber-300' : 'bg-slate-600/30 text-slate-400'}`}>
+                        Server: {wsStatus}
+                    </span>
+                </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                 <StatusCard title="Total Clients" value={totalClients} icon={<Wifi size={24} className="text-purple-400" />} colorClass="bg-slate-700" valueColor="text-purple-400" />

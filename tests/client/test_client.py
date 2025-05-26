@@ -138,6 +138,7 @@ class TestCommandListener(unittest.IsolatedAsyncioTestCase):
         # Set test values
         client.CLIENT_ID = str(uuid.uuid4())
         client.is_paused = False
+        client.manual_disconnect_initiated = False  # Ensure flag is reset
 
     def tearDown(self):
         client.CLIENT_ID = self.original_client_id
@@ -324,7 +325,7 @@ class TestCommandListener(unittest.IsolatedAsyncioTestCase):
 
             # Check that the specific error message was printed
             expected_error_print = (
-                f"Client {client.CLIENT_ID}: Error processing message: "
+                f"Client {client.CLIENT_ID}: Error processing command: "
                 f"{simulated_error_text}"
             )
             # Also, the "Received command" print should have occurred
@@ -392,13 +393,17 @@ class TestCommandListener(unittest.IsolatedAsyncioTestCase):
         # Configure the mock to use our custom async iterator
         mock_websocket.__aiter__ = lambda self: AsyncIterRaiser()
 
-        with self.assertRaises(client.ClientInitiatedDisconnect) as context:
+        # Reset the flag before the test
+        client.manual_disconnect_initiated = False
+
+        with self.assertRaises(ConnectionClosed):  # Expect ConnectionClosed
             await client.listen_for_commands(mock_websocket)
 
-        # Check the message of the raised ClientInitiatedDisconnect
-        self.assertEqual(
-            str(context.exception), "Server disconnected client - shutting down"
-        )
+        # Check the flag
+        self.assertTrue(client.manual_disconnect_initiated)
+
+        # Optionally, check the specific ConnectionClosed exception details
+        # self.assertEqual(context.exception.rcvd.code, 1000) # This was in the setup, so it should be true
 
     async def test_connection_closed_other_code(self):
         """Test handling of connection closed with other codes (should reconnect)."""
@@ -437,13 +442,14 @@ class TestCommandListener(unittest.IsolatedAsyncioTestCase):
         mock_websocket = self.mock_websocket_with_messages(
             [json.dumps(disconnect_message)]
         )
+        # Reset the flag before the test
+        client.manual_disconnect_initiated = False
 
-        # The disconnect command should raise ClientInitiatedDisconnect
-        with self.assertRaises(client.ClientInitiatedDisconnect) as context:
-            await client.listen_for_commands(mock_websocket)
+        # listen_for_commands should complete without raising an exception here
+        await client.listen_for_commands(mock_websocket)
 
-        # Verify the exception message
-        self.assertIn("Server requested disconnect", str(context.exception))
+        # Verify that the flag was set
+        self.assertTrue(client.manual_disconnect_initiated)
 
         # Verify that disconnect acknowledgment was sent
         mock_websocket.send.assert_called_once()
@@ -468,6 +474,7 @@ class TestPeriodicStatusSender(unittest.IsolatedAsyncioTestCase):
         client.CLIENT_ID = str(uuid.uuid4())
         client.STATUS_INTERVAL = 0.05  # Very fast for testing
         client.is_paused = False
+        client.manual_disconnect_initiated = False  # Ensure flag is reset
 
     def tearDown(self):
         client.CLIENT_ID = self.original_client_id
@@ -582,6 +589,7 @@ class TestConnectionManagement(unittest.IsolatedAsyncioTestCase):
         client.RECONNECT_DELAY = 0.01  # Very fast for testing
         client.CLIENT_ID = str(uuid.uuid4())
         client.is_paused = False  # Ensure reset
+        client.manual_disconnect_initiated = False  # Ensure flag is reset
 
     def tearDown(self):
         client.SERVER_URL = self.original_server_url
@@ -607,11 +615,23 @@ class TestConnectionManagement(unittest.IsolatedAsyncioTestCase):
             listener_task_mock = AsyncMock()
             sender_task_mock = AsyncMock()
 
-            # Make gather wait for the event and then raise an exception to exit
-            async def mock_gather(*tasks):
+            # Make wait wait for the event and then raise an exception to exit
+            async def mock_wait(*tasks, return_when):
                 connection_established.set()  # Signal that connection was established
                 await asyncio.sleep(0.01)  # Brief delay to allow processing
-                raise client.ClientInitiatedDisconnect("Test exit")
+                # Simulate one task completing and raising the disconnect
+                # For simplicity, we'll assume the listener task is the one to complete/raise
+                # In a real scenario, one of the tasks in *tasks would raise this.
+                # We need to return a (done, pending) tuple similar to asyncio.wait
+                # Let's assume listener_task_mock is the one that 'completes'
+                # and causes the disconnect for testing purposes.
+                # We'll need to ensure listener_task_mock is one of the tasks passed.
+                for task_arg_tuple in tasks:
+                    for _ in task_arg_tuple:  # Renamed t to _
+                        # This is a simplification. In reality, one task would complete.
+                        # For this test, we are forcing an exit.
+                        pass  # Iterate through, but we will raise to exit
+                raise client.ClientInitiatedDisconnect("Test exit from mock_wait")
 
             def create_task_side_effect(coro):
                 if "listen_for_commands" in str(coro):
@@ -622,7 +642,7 @@ class TestConnectionManagement(unittest.IsolatedAsyncioTestCase):
 
             mock_create_task.side_effect = create_task_side_effect
 
-            with patch("asyncio.gather", side_effect=mock_gather):
+            with patch("asyncio.wait", side_effect=mock_wait):  # Patched asyncio.wait
                 # Run connect_and_send_updates until it exits
                 await client.connect_and_send_updates()
 
@@ -635,9 +655,14 @@ class TestConnectionManagement(unittest.IsolatedAsyncioTestCase):
         # Verify initial status message format from the first call
         first_call_args = mock_websocket.send.call_args_list[0][0]
         sent_data = json.loads(first_call_args[0])
-        self.assertEqual(sent_data["client_id"], client.CLIENT_ID)
-        self.assertEqual(sent_data["status"]["client_state"], "running")
-        self.assertIn("connected_at", sent_data["status"])
+        assert sent_data["client_id"] == client.CLIENT_ID
+        assert sent_data["status"]["client_state"] == "running"
+        # Client does not send 'connected_at', server adds it.
+        # Assertions should match what client sends.
+        assert "client_name" in sent_data["status"]
+        assert "client_role" in sent_data["status"]
+        assert "client_type" in sent_data["status"]
+        assert "timestamp" in sent_data["status"]  # from get_current_status_payload
 
     @patch("src.client.client.websockets.connect")
     async def test_system_exit_stops_reconnection(self, mock_connect):
@@ -653,7 +678,9 @@ class TestConnectionManagement(unittest.IsolatedAsyncioTestCase):
         """Test that connection errors trigger reconnection attempts."""
         mock_connect.side_effect = [
             ConnectionRefusedError("Connection refused"),  # First attempt fails
-            asyncio.CancelledError(),  # Second attempt, cancel to stop test
+            asyncio.CancelledError(
+                "Simulated cancellation to stop test"
+            ),  # Second attempt, cancel to stop test
         ]
 
         with self.assertRaises(

@@ -1,51 +1,244 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Layout from './components/Layout';
 import ClientTable from './components/ClientTable';
 import ChatWindow from './components/ChatWindow';
 import StatusOverview from './components/StatusOverview';
+
+const generateRandomString = (length = 8) => {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+    return result;
+};
+
+const generateFrontendClientId = () => `react-fe-${generateRandomString(6)}`;
+const generateFrontendClientName = () => `human-${generateRandomString(4)}`;
+
+// WebSocket URL
+const WS_URL =
+    process.env.NODE_ENV === 'development'
+        ? `ws://${window.location.hostname}:8000/ws`
+        : `ws://${window.location.host}/ws`;
 
 function App() {
     const [clients, setClients] = useState({});
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
     const [redisStatus, setRedisStatus] = useState('unknown');
+    const [wsStatus, setWsStatus] = useState('disconnected');
+    const frontendClientId = useRef(generateFrontendClientId());
+    const frontendClientName = useRef(generateFrontendClientName());
 
+    const websocket = useRef(null);
+    const reconnectInterval = useRef(null);
+
+    const connectWebSocket = useCallback(() => {
+        if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
+            console.log("WebSocket already connected.");
+            return;
+        }
+        if (reconnectInterval.current) {
+            clearInterval(reconnectInterval.current);
+            reconnectInterval.current = null;
+        }
+
+        console.log("Attempting to connect to WebSocket:", WS_URL);
+        setWsStatus('connecting');
+        const ws = new WebSocket(WS_URL);
+        websocket.current = ws;
+
+        ws.onopen = () => {
+            console.log("WebSocket connected successfully to:", WS_URL);
+            setWsStatus('connected');
+            setError(null);
+            if (reconnectInterval.current) {
+                clearInterval(reconnectInterval.current);
+                reconnectInterval.current = null;
+            }
+            ws.send(JSON.stringify({
+                client_id: frontendClientId.current,
+                status: {
+                    client_name: frontendClientName.current,
+                    client_role: "frontend",
+                    client_type: "react_dashboard",
+                    connected_at: new Date().toISOString(),
+                }
+            }));
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                console.log("WebSocket message received:", message);
+
+                if (message.type === 'all_clients_update' && message.data) {
+                    setClients(message.data.clients || {});
+                    setRedisStatus(message.data.redis_status || 'unknown');
+                } else if (message.client_id && message.status) { // Single client update
+                    setClients(prevClients => ({
+                        ...prevClients,
+                        [message.client_id]: {
+                            ...(prevClients[message.client_id] || {}),
+                            ...message.status,
+                            client_id: message.client_id,
+                            recentlyUpdated: true // Add flag for animation
+                        }
+                    }));
+                    // Remove the flag after a short period
+                    setTimeout(() => {
+                        setClients(prevClients => {
+                            if (prevClients[message.client_id]) {
+                                const { recentlyUpdated, ...rest } = prevClients[message.client_id];
+                                return {
+                                    ...prevClients,
+                                    [message.client_id]: rest
+                                };
+                            }
+                            return prevClients;
+                        });
+                    }, 1500); // Animation duration + buffer
+                } else if (message.type === 'client_disconnected' && message.client_id) {
+                    setClients(prevClients => {
+                        const newClients = { ...prevClients };
+                        if (newClients[message.client_id]) {
+                            // Option 1: Mark as disconnected (if server doesn't send full status)
+                            // newClients[message.client_id] = {
+                            //    ...newClients[message.client_id],
+                            //    connected: 'false',
+                            //    disconnect_time: new Date().toISOString(), 
+                            //    status_detail: 'Disconnected (event)'
+                            // };
+                            // Option 2: Remove from list (if server broadcasts deletions)
+                            delete newClients[message.client_id];
+                        }
+                        return newClients;
+                    });
+                } else if (message.redis_status) {
+                    setRedisStatus(message.redis_status);
+                }
+
+                if (message.result === 'message_processed' && message.client_id === frontendClientId.current) {
+                    console.log("Frontend registration acknowledged by server.");
+                    if (message.redis_status) setRedisStatus(message.redis_status);
+                }
+
+                if (isLoading && (message.type === 'all_clients_update' || (message.client_id && message.status))) {
+                    setIsLoading(false);
+                }
+
+            } catch (e) {
+                console.error('Failed to parse WebSocket message:', e);
+            }
+        };
+
+        ws.onclose = (event) => {
+            console.log(`WebSocket disconnected: ${event.code} - ${event.reason}`);
+            setWsStatus('disconnected');
+            websocket.current = null;
+            if (!reconnectInterval.current && event.code !== 1000) {
+                console.log("Attempting to reconnect WebSocket in 5 seconds...");
+                reconnectInterval.current = setInterval(() => {
+                    console.log("Retrying WebSocket connection...");
+                    connectWebSocket(); // This call within onclose is for retries
+                }, 5000);
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            setWsStatus('error');
+            websocket.current = null;
+        };
+    }, [WS_URL]); // Added WS_URL as it's an external variable used inside.
+
+    // Effect to initiate WebSocket connection on mount
+    useEffect(() => {
+        connectWebSocket();
+
+        // Cleanup function to close WebSocket when component unmounts
+        return () => {
+            if (websocket.current) {
+                console.log("Closing WebSocket connection on component unmount.");
+                websocket.current.close(1000, "Component unmounting");
+            }
+            if (reconnectInterval.current) {
+                clearInterval(reconnectInterval.current);
+            }
+        };
+    }, [connectWebSocket]); // Dependency on connectWebSocket (which is memoized)
+
+    // Effect for HTTP Polling (as a fallback or for initial load)
     useEffect(() => {
         const fetchClients = async () => {
-            // Don't set isLoading to true on subsequent polls if data already exists
-            if (Object.keys(clients).length === 0) {
+            if (Object.keys(clients).length === 0 && wsStatus !== 'connected') {
                 setIsLoading(true);
             }
-            setError(null);
             try {
                 const response = await fetch('/statuses');
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 const data = await response.json();
-                setClients(data.clients || {});
+                // Only set from HTTP if WebSocket isn't connected or hasn't provided data yet
+                if (wsStatus !== 'connected' || Object.keys(clients).length === 0) {
+                    setClients(data.clients || {});
+                    if (isLoading && Object.keys(data.clients || {}).length > 0) setIsLoading(false);
+                }
                 setRedisStatus(data.redis_status || 'unknown');
                 if (data.error_redis) {
-                    console.warn("Redis error from server:", data.error_redis);
+                    console.warn("Redis error from server (HTTP poll):", data.error_redis);
                 }
+                if (wsStatus !== 'connected') setError(null); // Clear HTTP error if poll succeeds and WS is down
             } catch (e) {
-                console.error("Failed to fetch client statuses:", e);
-                setError(e.message);
-                // Potentially setClients({}) here if preferred on error, 
-                // or leave existing data
-            } finally {
-                // Only set isLoading to false if it was true (initial load)
-                if (isLoading && Object.keys(clients).length === 0) {
-                    setIsLoading(false);
+                console.error("Failed to fetch client statuses (HTTP poll):", e);
+                if (wsStatus !== 'connected') {
+                    setError(e.message);
+                    if (isLoading) setIsLoading(false);
                 }
             }
         };
+        // Initial fetch if WebSocket isn't immediately connecting/connected
+        if (wsStatus === 'disconnected' || wsStatus === 'error') {
+            fetchClients();
+        }
+        const intervalId = setInterval(() => {
+            if (wsStatus !== 'connected') { // Poll only if WebSocket is not connected
+                fetchClients();
+            }
+        }, 10000);
 
-        fetchClients(); // Initial fetch
-        const intervalId = setInterval(fetchClients, 5000); // Refresh every 5 seconds
+        return () => clearInterval(intervalId);
+    }, [wsStatus, isLoading]); // Re-evaluate polling based on wsStatus and isLoading
 
-        return () => clearInterval(intervalId); // Cleanup interval on component unmount
-    }, []); // Empty dependency array means this effect runs once on mount and cleanup on unmount
+    // Client Action Handlers
+    const handleClientAction = async (clientId, action) => {
+        console.log(`Attempting to ${action} client: ${clientId}`);
+        try {
+            const response = await fetch(`/clients/${clientId}/${action}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(`Failed to ${action} client ${clientId}: ${response.status} ${errorData.detail || response.statusText}`);
+            }
+            const result = await response.json();
+            console.log(`${action} client ${clientId} successful:`, result);
+            // Optionally, trigger a manual refresh or wait for WebSocket update
+            // For now, we assume WebSocket will provide the updated status or server confirms via HTTP response.
+            // If the action directly changes status (like disconnect), 
+            // the server's broadcast should update the UI.
+            // If using HTTP polling as primary, you might want to trigger a manual poll here:
+            // fetchClients(); // (if fetchClients is exposed or part of a useCallback)
+        } catch (err) {
+            console.error(`Error ${action}ing client ${clientId}:`, err);
+            setError(`Failed to ${action} client: ${err.message}`); // Display error to user
+        }
+    };
 
     const messages = [
         { id: 1, sender: 'client-1', text: 'Obstacle detected at K2' },
@@ -54,25 +247,23 @@ function App() {
     ];
 
     return (
-        <Layout>
+        <Layout wsStatus={wsStatus}> {/* Pass wsStatus to Layout for potential display */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 bg-slate-900 text-slate-50 min-h-screen">
-                {/* Client Table and Status Overview in the first two columns for lg screens */}
                 <div className="lg:col-span-2 flex flex-col gap-6">
                     <StatusOverview
                         clients={clients}
-                        isLoading={isLoading && Object.keys(clients).length === 0}
+                        isLoading={isLoading}
                         error={error}
                         redisStatus={redisStatus}
+                        wsStatus={wsStatus}
                     />
                     <ClientTable
                         clients={clients}
-                        isLoading={isLoading && Object.keys(clients).length === 0}
+                        isLoading={isLoading}
                         error={error}
-                        redisStatus={redisStatus}
+                        onClientAction={handleClientAction}
                     />
                 </div>
-
-                {/* Chat Window in the last column */}
                 <div className="lg:col-span-1">
                     <ChatWindow messages={messages} />
                 </div>
