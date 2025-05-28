@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import websockets
 from faker import Faker  # Added for realistic name generation
 from websockets import ConnectionClosed, InvalidURI
-from websockets.connection import State as WebSocketState  # Import State enum
+from websockets.protocol import State as WebSocketState  # Corrected import
 
 # Use environment variable with fallback for flexibility
 SERVER_URL = os.getenv("SERVER_URL", "ws://localhost:8000/ws")
@@ -181,7 +181,8 @@ async def listen_for_commands(websocket):
         close_code = e.rcvd.code if e.rcvd else None
         close_reason = e.rcvd.reason if e.rcvd else ""
         print(
-            f"Client {CLIENT_ID}: Connection closed. Code: {close_code}, Reason: '{close_reason}'"
+            f"Client {CLIENT_ID}: Connection closed. "
+            f"Code: {close_code}, Reason: '{close_reason}'"
         )
         if (
             close_code == 1000
@@ -224,128 +225,143 @@ async def send_status_update_periodically(websocket):
 
 
 async def connect_and_send_updates():
-    """Connects to the server, sends initial status, and manages concurrent tasks."""
-    global manual_disconnect_initiated, is_paused
+    """Main function to connect to the server and send periodic updates."""
+    global manual_disconnect_initiated, CLIENT_ID, CLIENT_NAME, is_paused
+    delay = RECONNECT_DELAY  # Initial delay
 
     while not manual_disconnect_initiated:
-        websocket: websockets.client.ClientConnection | None = None
+        websocket = None  # Initialize websocket to None
+        listener_task = None
+        periodic_sender_task = None
         try:
-            async with websockets.connect(SERVER_URL) as ws_connection:
-                websocket = ws_connection
-                print(f"Client {CLIENT_ID} ({CLIENT_NAME}): Connected to {SERVER_URL}")
-                manual_disconnect_initiated = False
-                is_paused = False
+            print(f"Client {CLIENT_ID}: Attempting to connect to {SERVER_URL}...")
+            websocket = await websockets.connect(SERVER_URL)
+            print(f"Client {CLIENT_ID} connected to {SERVER_URL}")
+            delay = RECONNECT_DELAY  # Reset delay on successful connection
 
-                initial_status = {
-                    "client_name": CLIENT_NAME,
-                    "client_state": "running",
-                    "client_role": CLIENT_ROLE,
-                    "client_type": CLIENT_TYPE,
-                    **get_current_status_payload(),
-                }
-                await send_status_message(websocket, initial_status)
+            # Initial full status update upon connection
+            initial_status = {
+                "client_name": CLIENT_NAME,
+                "client_state": "running",
+                "client_role": CLIENT_ROLE,
+                "client_type": CLIENT_TYPE,
+                **get_current_status_payload(),
+            }
+            await send_status_message(websocket, initial_status)
 
-                listener_task = asyncio.create_task(listen_for_commands(websocket))
-                periodic_sender_task = asyncio.create_task(
-                    send_status_update_periodically(websocket)
-                )
-
-                done, pending = await asyncio.wait(
-                    [listener_task, periodic_sender_task],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                for task in pending:
-                    task.cancel()
-
-                for task in done:
-                    try:
-                        task.result()
-                    except ConnectionClosed:
-                        if not manual_disconnect_initiated:
-                            print(
-                                f"Client {CLIENT_ID}: A task ended due to connection closure."
-                            )
-                    except asyncio.CancelledError:
-                        print(f"Client {CLIENT_ID}: A task was cancelled externally.")
-                    except Exception as task_exc:
-                        if not manual_disconnect_initiated:
-                            print(
-                                f"Client {CLIENT_ID}: A task failed: {task_exc}. Initiating shutdown."
-                            )
-                            manual_disconnect_initiated = True
-
-                if manual_disconnect_initiated:
-                    print(
-                        f"Client {CLIENT_ID}: Graceful shutdown signaled from tasks. Closing websocket."
-                    )
-                    if websocket and websocket.state == WebSocketState.OPEN:
-                        await websocket.close(reason="Client task initiated shutdown")
-                    break
-
-        except ClientInitiatedDisconnect as e:
-            print(
-                f"Client {CLIENT_ID}: ClientInitiatedDisconnect caught: {e}. Ensuring shutdown."
+            # Create tasks for listening to commands and sending periodic updates
+            listener_task = asyncio.create_task(listen_for_commands(websocket))
+            periodic_sender_task = asyncio.create_task(
+                send_status_update_periodically(websocket)
             )
-            manual_disconnect_initiated = True
-            if websocket and websocket.state == WebSocketState.OPEN:
-                await websocket.close(code=1000, reason="ClientInitiatedDisconnect")
-            break
-        except SystemExit as e:
-            print(f"Client {CLIENT_ID}: SystemExit caught: {e}. Shutting down.")
-            manual_disconnect_initiated = True
-            if websocket and websocket.state == WebSocketState.OPEN:
-                await websocket.close(code=1000, reason="SystemExit")
-            break
-        except asyncio.CancelledError:
-            print(f"Client {CLIENT_ID}: Main connection loop cancelled.")
-            manual_disconnect_initiated = True
-            raise
-        except ConnectionRefusedError as e:
-            print(f"Client {CLIENT_ID}: Connection refused: {e}. Retrying...")
-            # manual_disconnect_initiated remains False, rely on generic sleep and loop
-        except (InvalidURI, OSError) as e:
-            print(
-                f"Client {CLIENT_ID}: Invalid configuration or OS error: {e}. Cannot connect. Shutting down."
+
+            # Wait for either task to complete (or be cancelled)
+            done, pending = await asyncio.gather(
+                listener_task, periodic_sender_task, return_exceptions=True
             )
-            manual_disconnect_initiated = True
-            break
-        except ConnectionClosed as e:
+
+            # Handle results/exceptions from tasks
+            for task_result in done:  # Changed variable name for clarity
+                if isinstance(task_result, Exception):
+                    exc = task_result
+                    if isinstance(exc, ClientInitiatedDisconnect):
+                        print(
+                            f"Client {CLIENT_ID}: "
+                            f"Client initiated disconnect processed."
+                        )
+                        manual_disconnect_initiated = True  # Ensure flag is set
+                    elif isinstance(exc, ConnectionClosed):
+                        # This will be handled by the outer ConnectionClosed handler
+                        raise exc  # Re-raise to trigger specific handling
+                    else:
+                        print(
+                            f"Client {CLIENT_ID}: "
+                            f"Error in task: {exc}. Signaling shutdown."
+                        )
+                        manual_disconnect_initiated = True  # Signal shutdown
+
+            # If manual_disconnect_initiated is True, break the loop after cleanup
             if manual_disconnect_initiated:
-                print(
-                    f"Client {CLIENT_ID}: ConnectionClosed caught during shutdown sequence."
-                )
-            else:
-                close_code = e.code
-                print(
-                    f"Client {CLIENT_ID}: Connection closed unexpectedly. Code: {close_code}. Retrying..."
-                )
-                if close_code == 1000:
-                    print(
-                        f"Client {CLIENT_ID}: Server closed connection (1000). Shutting down."
-                    )
-                    manual_disconnect_initiated = True
-            if manual_disconnect_initiated:
+                print(f"Client {CLIENT_ID}: Breaking main loop for shutdown.")
                 break
-        except Exception as e:
+
+        except InvalidURI:
+            print(f"Client {CLIENT_ID}: Invalid server URI: {SERVER_URL}. Exiting.")
+            manual_disconnect_initiated = True  # Prevent further attempts
+            break  # Exit the loop
+        except ConnectionRefusedError:
             print(
-                f"Client {CLIENT_ID}: Unexpected error in connection loop: {type(e).__name__} - {e}. Retrying..."
+                f"Client {CLIENT_ID}: Connection refused. "
+                f"Retrying in {delay:.2f} seconds..."
             )
-            if websocket and websocket.state == WebSocketState.OPEN:
-                await websocket.close(code=1011, reason="Unexpected loop error")
+        except ConnectionClosed as e:
+            close_code = e.rcvd.code if e.rcvd else None
+            close_reason = e.rcvd.reason if e.rcvd else ""
+            print(
+                f"Client {CLIENT_ID}: Connection closed. "
+                f"Code: {close_code}, Reason: '{close_reason}'"
+            )
+            if manual_disconnect_initiated:
+                print(f"Client {CLIENT_ID}: Connection closed during shutdown.")
+                break  # Exit loop if disconnect was intentional
+
+            if close_code == 4008:  # Duplicate client ID
+                print(
+                    f"Client {CLIENT_ID}: Duplicate client ID detected (4008). "
+                    f"Generating new ID and retrying immediately."
+                )
+                CLIENT_ID = str(uuid.uuid4())  # Regenerate client ID
+                CLIENT_NAME = generate_realistic_name()  # Regenerate name with new ID
+                delay = 0  # Retry immediately
+                continue  # Skip sleep and retry connection immediately
+            elif close_code == 1000:  # Normal closure by server
+                print(
+                    f"Client {CLIENT_ID}: Server closed connection (1000). Will attempt to reconnect."
+                )
+                # Standard delay will apply before reconnecting
+            # For other close codes, standard delay applies
+
+        except asyncio.CancelledError:
+            print(f"Client {CLIENT_ID}: Main connection task cancelled. Exiting.")
+            manual_disconnect_initiated = True
+            break
+        except Exception as e:
+            print(f"Client {CLIENT_ID}: An unexpected error occurred: {e}. Retrying...")
+            # Consider if some errors should be fatal and set manual_disconnect_initiated = True
+        finally:
+            # Ensure tasks are cancelled if they were started
+            if listener_task and not listener_task.done():
+                listener_task.cancel()
+                try:
+                    await listener_task
+                except asyncio.CancelledError:
+                    pass  # Expected
+            if periodic_sender_task and not periodic_sender_task.done():
+                periodic_sender_task.cancel()
+                try:
+                    await periodic_sender_task
+                except asyncio.CancelledError:
+                    pass  # Expected
+
+            # Close the websocket if it was opened and is not already closed
+            if websocket and websocket.state != WebSocketState.CLOSED:
+                print(
+                    f"Client {CLIENT_ID}: Closing WebSocket connection in finally block."
+                )
+                await websocket.close()
+                websocket = None  # Reset websocket
 
         if not manual_disconnect_initiated:
-            print(
-                f"Client {CLIENT_ID}: Attempting reconnection in {RECONNECT_DELAY} seconds..."
-            )
-            await asyncio.sleep(RECONNECT_DELAY)
+            if delay > 0:  # Only sleep if delay is positive
+                await asyncio.sleep(delay)
+            delay = min(
+                delay * 2 if delay > 0 else RECONNECT_DELAY, 60
+            )  # Exponential backoff, max 60 seconds
         else:
-            print(f"Client {CLIENT_ID}: Shutdown initiated, not reconnecting.")
-            if websocket and websocket.state == WebSocketState.OPEN:
-                await websocket.close(reason="Ensuring closure on shutdown")
-            break
+            break  # Ensure exit if disconnect was initiated
 
-    print(f"Client {CLIENT_ID} ({CLIENT_NAME}) has shut down.")
+    print(f"Client {CLIENT_ID}: Exited main connection loop.")
+    print(f"Client {CLIENT_ID}: Shutdown complete.")
 
 
 if __name__ == "__main__":

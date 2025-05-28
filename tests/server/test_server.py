@@ -12,6 +12,7 @@ import pytest
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
+from src.server import config  # Added import
 from src.server.redis_manager import client_cache, status_store
 
 
@@ -58,7 +59,9 @@ class TestWebSocketServer:
         # Access the mocked worker_connections directly from the module after monkeypatching in fixture
         from src.server import server as server_module
 
-        with websocket_client.websocket_connect("/ws") as websocket:
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
             client_id = "test_worker_client"
             registration_message = {
                 "client_id": client_id,
@@ -100,7 +103,9 @@ class TestWebSocketServer:
             AsyncMock(return_value=(mock_all_statuses, "redis", None)),
         )
 
-        with websocket_client.websocket_connect("/ws") as websocket:
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
             client_id = "test_frontend_client"
             registration_message = {
                 "client_id": client_id,
@@ -155,7 +160,9 @@ class TestWebSocketServer:
         # REMOVED local patch for src.server.redis_manager.get_client_info
         # Rely on conftest.py mock_redis.hgetall returning {} by default.
         # with patch("src.server.redis_manager.get_client_info", AsyncMock(return_value=None)) as mock_internal_get_client_info:
-        with websocket_client.websocket_connect("/ws") as websocket:
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
             client_id = "test_worker_redis"
             status_payload = {
                 "state": "active",
@@ -234,7 +241,9 @@ class TestWebSocketServer:
             ),  # Missing status and client_role
         ]
         for message, error_detail in test_cases:
-            with websocket_client.websocket_connect("/ws") as websocket:
+            with websocket_client.websocket_connect(
+                config.WEBSOCKET_ENDPOINT_PATH
+            ) as websocket:
                 websocket.send_text(json.dumps(message))
                 response = websocket.receive_text()
                 data = json.loads(response)
@@ -244,7 +253,9 @@ class TestWebSocketServer:
                 # For now, ensuring error message is prime concern.
 
     def test_invalid_json_message_during_registration(self, websocket_client, caplog):
-        with websocket_client.websocket_connect("/ws") as websocket:
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
             websocket.send_text("invalid json")
             response = websocket.receive_text()
             data = json.loads(response)
@@ -283,7 +294,9 @@ class TestWebSocketServer:
 
         # REMOVED local patch for src.server.redis_manager.get_client_info
         # with patch("src.server.redis_manager.get_client_info", AsyncMock(return_value=mock_state_after_reg)) as mock_internal_get_client_info:
-        with websocket_client.websocket_connect("/ws") as websocket:
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
             # Registration
             reg_message = {
                 "client_id": client_id,
@@ -370,7 +383,9 @@ class TestWebSocketServer:
         mock_redis.hset.reset_mock()
 
         client_id = "test_cleanup_worker"
-        with websocket_client.websocket_connect("/ws") as websocket:
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
             # Register client
             message = {
                 "client_id": client_id,
@@ -473,7 +488,11 @@ class TestClientControlAPI:
                 disconnect_status_for_broadcast
             )
 
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/disconnect")
+            response = test_client.post(
+                config.DISCONNECT_CLIENT_ENDPOINT_PATH.format(
+                    client_id=self.TEST_CLIENT_ID
+                )
+            )
 
         assert response.status_code == 200
         # The message changed slightly in server implementation
@@ -485,7 +504,8 @@ class TestClientControlAPI:
             json.dumps({"command": "disconnect"})
         )
         mock_ws.close.assert_awaited_once_with(
-            code=1000, reason="Server initiated disconnect via HTTP"  # Updated reason
+            code=config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
+            reason="Server initiated disconnect via HTTP",  # Updated reason
         )
 
         # Check that the client was removed from active connections
@@ -535,7 +555,11 @@ class TestClientControlAPI:
                 "connected": "true",
                 "client_role": "worker",
             }
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/disconnect")
+            response = test_client.post(
+                config.DISCONNECT_CLIENT_ENDPOINT_PATH.format(
+                    client_id=self.TEST_CLIENT_ID
+                )
+            )
 
         assert (
             response.status_code == 200
@@ -573,7 +597,11 @@ class TestClientControlAPI:
                 "client_role": "worker",
                 "disconnect_time": "some_time_ago",
             }
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/disconnect")
+            response = test_client.post(
+                config.DISCONNECT_CLIENT_ENDPOINT_PATH.format(
+                    client_id=self.TEST_CLIENT_ID
+                )
+            )
 
         assert (
             response.status_code == 200
@@ -596,7 +624,11 @@ class TestClientControlAPI:
 
         with patch("src.server.server.get_client_info") as mock_get_client_info:
             mock_get_client_info.return_value = None  # Truly not found
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/disconnect")
+            response = test_client.post(
+                config.DISCONNECT_CLIENT_ENDPOINT_PATH.format(
+                    client_id=self.TEST_CLIENT_ID
+                )
+            )
 
         # Even if not found, server attempts to mark as disconnected in Redis
         # This behavior changed: server will try to set a "disconnected" status.
@@ -637,7 +669,9 @@ class TestClientControlAPI:
             "src.server.server.get_client_info",
             AsyncMock(return_value=paused_status_for_broadcast),
         ):
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
+            response = test_client.post(
+                config.PAUSE_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+            )
 
         assert response.status_code == 200
         # Message updated in server.py
@@ -668,7 +702,9 @@ class TestClientControlAPI:
         # Scenario 1: Client not in Redis at all
         mock_redis.hgetall.return_value = {}
         with patch("src.server.server.get_client_info", AsyncMock(return_value=None)):
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
+            response = test_client.post(
+                config.PAUSE_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+            )
         assert response.status_code == 404
         assert "not found or already disconnected" in response.json()["detail"]
 
@@ -678,7 +714,9 @@ class TestClientControlAPI:
             "src.server.server.get_client_info",
             AsyncMock(return_value={"connected": "false"}),
         ):
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
+            response = test_client.post(
+                config.PAUSE_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+            )
         assert response.status_code == 404
         assert "not found or already disconnected" in response.json()["detail"]
 
@@ -703,7 +741,9 @@ class TestClientControlAPI:
         monkeypatch.setitem(status_store, "redis", "connected")
         mock_redis.hset = AsyncMock()  # For the status_update to "paused"
 
-        response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
+        response = test_client.post(
+            config.PAUSE_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+        )
 
         # Server now proceeds to update state to 'paused' even if send fails due to disconnect
         assert response.status_code == 200
@@ -748,7 +788,9 @@ class TestClientControlAPI:
         # Server behavior changed: it logs the error and proceeds to update state to "paused".
         # It does not raise 500 from the (WebSocketDisconnect, RuntimeError) block anymore for send_text.
         # The raise HTTPException for other Exception types is still there.
-        response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/pause")
+        response = test_client.post(
+            config.PAUSE_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+        )
 
         assert response.status_code == 200  # Proceeds to update state
         assert "Pause command processed for client" in response.json()["message"]
@@ -800,7 +842,9 @@ class TestClientControlAPI:
             "src.server.server.get_client_info",
             AsyncMock(return_value=running_status_for_broadcast),
         ):
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/resume")
+            response = test_client.post(
+                config.RESUME_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+            )
 
         assert response.status_code == 200
         assert "Resume command processed for client" in response.json()["message"]
@@ -828,7 +872,9 @@ class TestClientControlAPI:
         # Scenario 1: Client not in Redis
         mock_redis.hgetall.return_value = {}  # Not in Redis
         with patch("src.server.server.get_client_info", AsyncMock(return_value=None)):
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/resume")
+            response = test_client.post(
+                config.RESUME_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+            )
         assert response.status_code == 404
         assert "not found or already disconnected" in response.json()["detail"]
 
@@ -840,7 +886,9 @@ class TestClientControlAPI:
             "src.server.server.get_client_info",
             AsyncMock(return_value={"connected": "false"}),
         ):
-            response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/resume")
+            response = test_client.post(
+                config.RESUME_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+            )
         assert response.status_code == 404
         assert "not found or already disconnected" in response.json()["detail"]
 
@@ -865,7 +913,9 @@ class TestClientControlAPI:
         monkeypatch.setitem(status_store, "redis", "connected")
         mock_redis.hset = AsyncMock()  # For update to "running"
 
-        response = test_client.post(f"/clients/{self.TEST_CLIENT_ID}/resume")
+        response = test_client.post(
+            config.RESUME_CLIENT_ENDPOINT_PATH.format(client_id=self.TEST_CLIENT_ID)
+        )
 
         # Server updates state to 'running' even if send fails due to disconnect
         assert response.status_code == 200
@@ -905,7 +955,7 @@ def test_static_files_not_served(test_client):
 
 def test_get_all_statuses_endpoint(test_client):
     """Test the /statuses endpoint returns proper structure."""
-    response = test_client.get("/statuses")
+    response = test_client.get(config.STATUSES_ENDPOINT_PATH)
     assert response.status_code == 200
     data = response.json()
     assert "redis_status" in data
@@ -915,7 +965,7 @@ def test_get_all_statuses_endpoint(test_client):
 
 def test_health_endpoint(test_client):
     """Test the /health endpoint."""
-    response = test_client.get("/health")
+    response = test_client.get(config.HEALTH_ENDPOINT_PATH)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
@@ -924,7 +974,7 @@ def test_health_endpoint(test_client):
 
 def test_cors_headers_not_set_by_default(test_client):
     """Test that CORS headers are not set by default (handled by frontend proxy)."""
-    response = test_client.get("/health")
+    response = test_client.get(config.HEALTH_ENDPOINT_PATH)
     assert response.status_code == 200
     # CORS is handled by the frontend development proxy, not the backend
     assert "access-control-allow-origin" not in response.headers
@@ -933,16 +983,55 @@ def test_cors_headers_not_set_by_default(test_client):
 def test_api_endpoints_structure(test_client):
     """Test that our API endpoints are properly structured."""
     # Test health endpoint
-    health_response = test_client.get("/health")
+    health_response = test_client.get(config.HEALTH_ENDPOINT_PATH)
     assert health_response.status_code == 200
     health_data = health_response.json()
     assert "status" in health_data
     assert "redis_status" in health_data
 
     # Test statuses endpoint
-    statuses_response = test_client.get("/statuses")
+    statuses_response = test_client.get(config.STATUSES_ENDPOINT_PATH)
     assert statuses_response.status_code == 200
     statuses_data = statuses_response.json()
     assert "redis_status" in statuses_data
     assert "clients" in statuses_data
     assert "data_source" in statuses_data
+
+
+def test_registered_routes(test_app):
+    """Test that the expected API endpoints are registered with their methods."""
+    routes = test_app.routes
+    # Extract paths and methods from registered routes
+    registered_paths = {}
+    for route in routes:
+        if hasattr(route, "path") and hasattr(route, "methods") and route.methods:
+            registered_paths[route.path] = list(route.methods)
+
+    # Define expected paths and their methods
+    expected_routes = {
+        config.HEALTH_ENDPOINT_PATH: ["GET"],
+        config.STATUSES_ENDPOINT_PATH: ["GET"],
+        config.DISCONNECT_CLIENT_ENDPOINT_PATH: ["POST"],
+        config.PAUSE_CLIENT_ENDPOINT_PATH: ["POST"],
+        config.RESUME_CLIENT_ENDPOINT_PATH: ["POST"],
+    }
+
+    for path, methods in expected_routes.items():
+        # For paths with parameters like {client_id}, we need to check the base path
+        # FastAPI's routing table will show the path with the parameter placeholder
+        if "{" in path and "}" in path:
+            base_path = path.split("{")[0]
+            found = False
+            for registered_path in registered_paths:
+                if registered_path.startswith(base_path):
+                    assert methods[0] in registered_paths[registered_path]
+                    found = True
+                    break
+            assert found, f"Expected path {path} not found in registered routes."
+        else:
+            assert (
+                path in registered_paths
+            ), f"Path {path} not found in registered routes."
+            assert (
+                methods[0] in registered_paths[path]
+            ), f"Method {methods[0]} not found for path {path}."

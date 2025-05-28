@@ -6,13 +6,15 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.server.server import app as fastapi_app
 
-
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def test_app():
     """Create a test FastAPI application."""
-    return fastapi_app
+    # Import app inside the fixture to ensure it's reloaded for each test
+    # This helps in cases where config changes might not be picked up otherwise
+    from src.server.server import app as fastapi_app_reloaded
+
+    return fastapi_app_reloaded
 
 
 @pytest.fixture

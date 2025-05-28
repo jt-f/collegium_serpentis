@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from src.server import config
 from src.server.redis_manager import (
     cleanup_disconnected_clients,
     close_redis,
@@ -26,23 +27,16 @@ from src.shared.utils.logging import get_logger
 # Initialize logger
 logger = get_logger(__name__)
 
-# Define frontend directory path
-# Assumes 'frontend-command-centre' is at the root of the workspace,
-# and 'server.py' is in 'src/server/'
-FRONTEND_BUILD_DIR = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__), "..", "..", "frontend-command-centre", "dist"
-    )
-)
-if not os.path.exists(FRONTEND_BUILD_DIR):
+
+if not os.path.exists(config.FRONTEND_BUILD_DIR):
     logger.warning(
-        f"Frontend build directory not found: {FRONTEND_BUILD_DIR}. "
+        f"Frontend build directory not found: {config.FRONTEND_BUILD_DIR}. "
         "The frontend will not be served until it is built and "
         "placed in the correct location."
     )
-elif not os.path.exists(os.path.join(FRONTEND_BUILD_DIR, "index.html")):
+elif not os.path.exists(os.path.join(config.FRONTEND_BUILD_DIR, "index.html")):
     logger.warning(
-        f"index.html not found in frontend build directory: {FRONTEND_BUILD_DIR}. "
+        f"index.html not found in frontend build directory: {config.FRONTEND_BUILD_DIR}. "
         "The frontend may not be served correctly."
     )
 
@@ -96,9 +90,19 @@ async def lifespan(app: FastAPI):
             f"Closing {len(worker_connections)} worker and {len(frontend_connections)} frontend connections."
         )
         for ws in list(worker_connections.values()):  # Iterate over a copy
-            all_close_tasks.append(ws.close(code=1001, reason="Server shutting down"))
+            all_close_tasks.append(
+                ws.close(
+                    code=config.WEBSOCKET_CLOSE_CODE_SERVER_SHUTDOWN,
+                    reason="Server shutting down",
+                )
+            )
         for ws in list(frontend_connections.values()):  # Iterate over a copy
-            all_close_tasks.append(ws.close(code=1001, reason="Server shutting down"))
+            all_close_tasks.append(
+                ws.close(
+                    code=config.WEBSOCKET_CLOSE_CODE_SERVER_SHUTDOWN,
+                    reason="Server shutting down",
+                )
+            )
 
         if all_close_tasks:
             results = await asyncio.gather(*all_close_tasks, return_exceptions=True)
@@ -127,20 +131,14 @@ app = FastAPI(lifespan=lifespan)
 # to this backend.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite default dev port
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",  # Common React dev port (e.g. Create React App)
-        "http://127.0.0.1:3000",
-        # Add your production frontend URL here when you deploy
-    ],
+    allow_origins=config.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],  # Allows all standard HTTP methods
     allow_headers=["*"],  # Allows all headers
 )
 
 
-@app.websocket("/ws")
+@app.websocket(config.WEBSOCKET_ENDPOINT_PATH)
 async def websocket_endpoint(websocket: WebSocket):
     client_id: str | None = None
     client_role: str | None = None  # To store the role of the connected client
@@ -168,7 +166,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     }
                 )
             )
-            await websocket.close(code=1008)  # Policy Violation
+            await websocket.close(
+                code=config.WEBSOCKET_CLOSE_CODE_POLICY_VIOLATION
+            )  # Policy Violation
             return
 
         logger.info(
@@ -355,7 +355,9 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_text(
                 json.dumps({"error": "Invalid JSON format for registration"})
             )
-            await websocket.close(code=1002)  # Protocol error
+            await websocket.close(
+                code=config.WEBSOCKET_CLOSE_CODE_PROTOCOL_ERROR
+            )  # Protocol error
     except Exception as e:
         logger.error(
             f"Unexpected WebSocket error for client: {{client_id='{client_id}', role='{client_role}'}}",
@@ -364,7 +366,9 @@ async def websocket_endpoint(websocket: WebSocket):
         )
         if not websocket.client_state == WebSocketDisconnect:  # type: ignore
             try:
-                await websocket.close(code=1011)  # Internal error
+                await websocket.close(
+                    code=config.WEBSOCKET_CLOSE_CODE_INTERNAL_ERROR
+                )  # Internal error
             except Exception as close_err:
                 logger.error(
                     f"Error trying to close WebSocket for {client_id} after unexpected error",
@@ -383,7 +387,7 @@ async def websocket_endpoint(websocket: WebSocket):
             )
 
 
-@app.get("/statuses")
+@app.get(config.STATUSES_ENDPOINT_PATH)
 async def get_all_statuses() -> dict[str, Any]:
     logger.debug(
         "Fetching all client statuses for HTTP GET /statuses"
@@ -429,7 +433,7 @@ async def broadcast_client_state_change(
         )
 
 
-@app.post("/clients/{client_id}/disconnect")
+@app.post(config.DISCONNECT_CLIENT_ENDPOINT_PATH)
 async def disconnect_client(client_id: str):
     logger.info(f"Received HTTP request to disconnect client {client_id}")
     websocket_to_close = worker_connections.get(client_id)
@@ -475,7 +479,8 @@ async def disconnect_client(client_id: str):
                 f"Closing WebSocket connection for client {client_id} from server-side (HTTP request)"
             )
             await websocket_to_close.close(
-                code=1000, reason="Server initiated disconnect via HTTP"
+                code=config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
+                reason="Server initiated disconnect via HTTP",
             )
         except RuntimeError as e:
             logger.warning(
@@ -508,7 +513,7 @@ async def disconnect_client(client_id: str):
     }
 
 
-@app.post("/clients/{client_id}/pause")
+@app.post(config.PAUSE_CLIENT_ENDPOINT_PATH, tags=["Client Control"])  # Added tag
 async def pause_client(client_id: str):
     logger.info(f"Received HTTP request to pause client {client_id}")
     websocket = worker_connections.get(client_id)
@@ -565,7 +570,7 @@ async def pause_client(client_id: str):
         }
 
 
-@app.post("/clients/{client_id}/resume")
+@app.post(config.RESUME_CLIENT_ENDPOINT_PATH, tags=["Client Control"])  # Added tag
 async def resume_client(client_id: str):
     logger.info(f"Received HTTP request to resume client {client_id}")
     websocket = worker_connections.get(client_id)
@@ -616,24 +621,30 @@ async def resume_client(client_id: str):
         }
 
 
-@app.get("/health")
+@app.get(config.HEALTH_ENDPOINT_PATH, tags=["System"])
 async def health_check():
     """Returns a simple health check response."""
-    return {"status": "ok", "redis_status": status_store.get("redis", "unknown")}
+    return {"status": "ok", "redis_status": status_store["redis"]}
 
 
-# Mount static files for the React frontend
-# This should be the LAST mounted path to act as a catch-all for Single Page Applications.
-# It will serve 'index.html' for paths that are not API routes,
-# allowing React Router to handle client-side navigation.
-# It also serves other static assets (JS, CSS, images) from the FRONTEND_BUILD_DIR.
-app.mount(
-    "/",
-    StaticFiles(directory=FRONTEND_BUILD_DIR, html=True),
-    name="static-frontend",
-)
+# Mount static files for the frontend if the directory exists
+if os.path.exists(config.FRONTEND_BUILD_DIR) and os.path.isdir(
+    config.FRONTEND_BUILD_DIR
+):
+    app.mount(
+        "/",  # Mount at the root path
+        StaticFiles(directory=config.FRONTEND_BUILD_DIR, html=True),
+        name="static-frontend",  # Changed name to static-frontend to be consistent if it was intended
+    )
+    logger.info(f"Serving frontend from: {config.FRONTEND_BUILD_DIR}")
+else:
+    logger.warning(
+        f"Frontend build directory {config.FRONTEND_BUILD_DIR} not found or not a directory. "
+        "Static file serving will be disabled."
+    )
 
 
+# REMOVED redundant app.mount for static files
 async def handle_disconnect(client_id: str, websocket: WebSocket, reason: str):
     """Handles client disconnection, updates status, and cleans up connections."""
 
