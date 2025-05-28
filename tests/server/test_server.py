@@ -13,7 +13,7 @@ from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from src.server import config  # Added import
-from src.server.redis_manager import client_cache, status_store
+from src.server.redis_manager import status_store
 
 
 def reset_global_server_state():
@@ -31,9 +31,6 @@ def manage_server_state(monkeypatch):
     # restoration. For active_connections, monkeypatch.setattr handles restoration
     # of the original object.
 
-    # Clear cache at start of each test
-    client_cache.clear()
-
     # Mock the connection dictionaries to have a clean slate
     mock_worker_connections = {}
     monkeypatch.setattr("src.server.server.worker_connections", mock_worker_connections)
@@ -48,7 +45,6 @@ def manage_server_state(monkeypatch):
 
     # Additional cleanup if necessary (though monkeypatch should auto-restore)
     reset_global_server_state()
-    client_cache.clear()
 
 
 class TestWebSocketServer:
@@ -93,20 +89,36 @@ class TestWebSocketServer:
 
         frontend_connections = server_module.frontend_connections  # Direct access
 
+        # Ensure Redis is marked as connected for successful operations
+        monkeypatch.setitem(status_store, "redis", "connected")
+
         # Mock get_all_client_statuses to return some initial data
         mock_all_statuses = {"other_client_1": {"state": "running"}}
-        mock_redis.hgetall_side_effect = (
-            None  # Clear any previous side effects for hgetall
-        )
         monkeypatch.setattr(
             "src.server.server.get_all_client_statuses",
             AsyncMock(return_value=(mock_all_statuses, "redis", None)),
         )
 
+        # Mock the status that will be returned after registration
+        client_id = "test_frontend_client"
+        expected_status_after_registration = {
+            "client_id": client_id,
+            "connected": "true",
+            "client_role": "frontend",
+            "client_type": "test_react_dashboard",
+            "connect_time": "2024-01-01T12:00:00.000000+00:00",
+            "last_seen": "2024-01-01T12:00:00.000000+00:00",
+        }
+
+        # Configure mock_redis.hgetall to return the expected status
+        mock_redis.hgetall.return_value = {
+            k.encode(): v.encode()
+            for k, v in expected_status_after_registration.items()
+        }
+
         with websocket_client.websocket_connect(
             config.WEBSOCKET_ENDPOINT_PATH
         ) as websocket:
-            client_id = "test_frontend_client"
             registration_message = {
                 "client_id": client_id,
                 "status": {
@@ -157,18 +169,33 @@ class TestWebSocketServer:
             status_store, "redis", "connected"
         )  # Ensure Redis is marked as connected
 
-        # REMOVED local patch for src.server.redis_manager.get_client_info
-        # Rely on conftest.py mock_redis.hgetall returning {} by default.
-        # with patch("src.server.redis_manager.get_client_info", AsyncMock(return_value=None)) as mock_internal_get_client_info:
+        client_id = "test_worker_redis"
+        status_payload = {
+            "state": "active",
+            "cpu_usage": "25%",
+            "client_role": "worker",
+        }
+
+        # Mock the status that will be returned after registration
+        expected_status_after_registration = {
+            "client_id": client_id,
+            "connected": "true",
+            "client_role": "worker",
+            "state": "active",
+            "cpu_usage": "25%",
+            "connect_time": "2024-01-01T12:00:00.000000+00:00",
+            "last_seen": "2024-01-01T12:00:00.000000+00:00",
+        }
+
+        # Configure mock_redis.hgetall to return the expected status
+        mock_redis.hgetall.return_value = {
+            k.encode(): v.encode()
+            for k, v in expected_status_after_registration.items()
+        }
+
         with websocket_client.websocket_connect(
             config.WEBSOCKET_ENDPOINT_PATH
         ) as websocket:
-            client_id = "test_worker_redis"
-            status_payload = {
-                "state": "active",
-                "cpu_usage": "25%",
-                "client_role": "worker",
-            }
             message = {
                 "client_id": client_id,
                 "status": status_payload,
@@ -194,28 +221,6 @@ class TestWebSocketServer:
             assert kwargs["mapping"]["cpu_usage"] == "25%"
 
             # Check broadcast was called
-            # Construct the expected status that get_client_info (called by server for broadcast)
-            # should return. This is based on what hset just wrote.
-            expected_status_for_broadcast_get = {
-                b"client_id": client_id.encode(),
-                b"connected": b"true",
-                b"connect_time": mock_redis.hset.call_args.kwargs["mapping"][
-                    "connect_time"
-                ].encode(),
-                b"last_seen": mock_redis.hset.call_args.kwargs["mapping"][
-                    "last_seen"
-                ].encode(),
-                b"client_role": status_payload[
-                    "client_role"
-                ].encode(),  # from original status_payload
-                b"state": status_payload["state"].encode(),
-                b"cpu_usage": status_payload["cpu_usage"].encode(),
-            }
-            mock_redis.hgetall.return_value = expected_status_for_broadcast_get
-
-            # The with patch block for get_client_info is removed here.
-            # The server will call the real get_client_info, which will use the mock_redis.hgetall configured above.
-
             mock_broadcast_actual.assert_called_once()  # Check the actual mock
             broadcast_args = mock_broadcast_actual.call_args[0][0]
             assert broadcast_args["type"] == "client_status_update"
