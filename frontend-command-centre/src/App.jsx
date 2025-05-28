@@ -176,7 +176,7 @@ function App() {
                 setIsLoading(true);
             }
             try {
-                const response = await fetch('/statuses');
+                const response = await fetch('/api/v1/statuses');
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -216,7 +216,7 @@ function App() {
     const handleClientAction = async (clientId, action) => {
         console.log(`Attempting to ${action} client: ${clientId}`);
         try {
-            const response = await fetch(`/clients/${clientId}/${action}`, {
+            const response = await fetch(`/api/v1/clients/${clientId}/${action}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

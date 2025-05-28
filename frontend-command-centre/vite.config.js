@@ -16,12 +16,10 @@ export default defineConfig({
   server: {
     proxy: {
       // Proxy API requests to the backend
-      '/clients/': {
+      '/api/': {
         target: 'http://localhost:8000',
         changeOrigin: true
       },
-      '/statuses': 'http://localhost:8000',
-      '/health': 'http://localhost:8000',
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
