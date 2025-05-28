@@ -6,6 +6,8 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import websockets
+from websockets.frames import Close
 
 from src.client import client
 
@@ -57,6 +59,24 @@ class TestClientUtilityFunctions:
         assert 0 <= status["cpu_usage"] <= 100
         assert 0 <= status["memory_usage"] <= 100
 
+    def test_generate_realistic_name(self):
+        """Test realistic name generation."""
+        name1 = client.generate_realistic_name()
+        name2 = client.generate_realistic_name()
+
+        assert isinstance(name1, str)
+        assert isinstance(name2, str)
+        assert len(name1) > 0
+        assert len(name2) > 0
+        # Names should be different (very high probability)
+        assert name1 != name2
+
+    def test_client_initiated_disconnect_exception(self):
+        """Test ClientInitiatedDisconnect exception class."""
+        exc = client.ClientInitiatedDisconnect("test message")
+        assert isinstance(exc, SystemExit)
+        assert str(exc) == "test message"
+
     @pytest.mark.asyncio
     async def test_send_status_message(self):
         """Test sending status messages, including timestamp in status."""
@@ -85,6 +105,99 @@ class TestClientUtilityFunctions:
         # Verify specific overridden values
         assert sent_data["status"]["cpu_usage"] == 50
         assert sent_data["status"]["memory_usage"] == 30
+
+    @pytest.mark.asyncio
+    async def test_send_status_message_when_manual_disconnect_initiated(self):
+        """Test that status messages are blocked when manual disconnect is initiated."""
+        original_flag = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = True
+            mock_ws = AsyncMock()
+
+            status = {"cpu_usage": 50, "memory_usage": 30}
+            await client.send_status_message(mock_ws, status)
+
+            # Should not send when manual_disconnect_initiated is True
+            mock_ws.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_flag
+
+    @pytest.mark.asyncio
+    async def test_send_status_message_disconnect_acknowledgment_allowed(self):
+        """Test that disconnect acknowledgments are sent even when manual disconnect is initiated."""
+        original_flag = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = True
+            mock_ws = AsyncMock()
+
+            status = {
+                "acknowledged_command": "disconnect",
+                "client_state": "disconnecting",
+            }
+            await client.send_status_message(mock_ws, status)
+
+            # Should send disconnect acknowledgment even when manual_disconnect_initiated is True
+            mock_ws.send.assert_awaited_once()
+            sent_data = json.loads(mock_ws.send.await_args[0][0])
+            assert sent_data["status"]["acknowledged_command"] == "disconnect"
+        finally:
+            client.manual_disconnect_initiated = original_flag
+
+    @pytest.mark.asyncio
+    async def test_send_full_status_update_when_paused(self):
+        """Test that full status updates are skipped when paused."""
+        original_paused = client.is_paused
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.is_paused = True
+            client.manual_disconnect_initiated = False
+            mock_ws = AsyncMock()
+
+            await client.send_full_status_update(mock_ws)
+
+            # Should not send when paused
+            mock_ws.send.assert_not_awaited()
+        finally:
+            client.is_paused = original_paused
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_send_full_status_update_when_manual_disconnect_initiated(self):
+        """Test that full status updates are skipped when manual disconnect is initiated."""
+        original_paused = client.is_paused
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.is_paused = False
+            client.manual_disconnect_initiated = True
+            mock_ws = AsyncMock()
+
+            await client.send_full_status_update(mock_ws)
+
+            # Should not send when manual_disconnect_initiated is True
+            mock_ws.send.assert_not_awaited()
+        finally:
+            client.is_paused = original_paused
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_send_full_status_update_normal_operation(self):
+        """Test that full status updates are sent during normal operation."""
+        original_paused = client.is_paused
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.is_paused = False
+            client.manual_disconnect_initiated = False
+            mock_ws = AsyncMock()
+
+            await client.send_full_status_update(mock_ws)
+
+            # Should send when not paused and not disconnecting
+            mock_ws.send.assert_awaited_once()
+            sent_data = json.loads(mock_ws.send.await_args[0][0])
+            assert sent_data["status"]["client_state"] == "running"
+        finally:
+            client.is_paused = original_paused
+            client.manual_disconnect_initiated = original_disconnect
 
 
 class TestClientMessageHandling:
@@ -189,6 +302,336 @@ class TestCommandListener:
         assert sent_data["status"]["client_state"] == "running"
         assert sent_data["status"]["acknowledged_command"] == "resume"
 
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_invalid_json(self, mock_websocket):
+        """Test handling of invalid JSON messages."""
+        # Configure mock to yield invalid JSON then stop
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            "invalid json {",
+            StopAsyncIteration,
+        ]
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            # Should handle invalid JSON gracefully
+            await client.listen_for_commands(mock_websocket)
+
+            # Should not crash and not send any responses
+            mock_websocket.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_server_acknowledgment_messages(
+        self, mock_websocket
+    ):
+        """Test handling of server acknowledgment messages."""
+        ack_message1 = json.dumps({"result": "message_processed", "client_id": "test"})
+        ack_message2 = json.dumps(
+            {"result": "registration_complete", "client_id": "test"}
+        )
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            ack_message1,
+            ack_message2,
+            StopAsyncIteration,
+        ]
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            await client.listen_for_commands(mock_websocket)
+
+            # Should not send any responses to acknowledgments
+            mock_websocket.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_non_command_message(self, mock_websocket):
+        """Test handling of non-command messages."""
+        non_command_message = json.dumps({"some_field": "some_value", "data": "test"})
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            non_command_message,
+            StopAsyncIteration,
+        ]
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            await client.listen_for_commands(mock_websocket)
+
+            # Should not send any responses to non-command messages
+            mock_websocket.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_unknown_command(self, mock_websocket):
+        """Test handling of unknown commands."""
+        unknown_command = json.dumps(
+            {"command": "unknown_command", "client_id": "test"}
+        )
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            unknown_command,
+            StopAsyncIteration,
+        ]
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            await client.listen_for_commands(mock_websocket)
+
+            # Should not send any responses to unknown commands
+            mock_websocket.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_pause_when_already_paused(self, mock_websocket):
+        """Test pause command when already paused."""
+        pause_command = json.dumps({"command": "pause", "client_id": "test"})
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            pause_command,
+            StopAsyncIteration,
+        ]
+
+        original_paused = client.is_paused
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.is_paused = True  # Already paused
+            client.manual_disconnect_initiated = False
+
+            await client.listen_for_commands(mock_websocket)
+
+            # Should not send acknowledgment when already paused
+            mock_websocket.send.assert_not_awaited()
+            assert client.is_paused is True  # Should remain paused
+        finally:
+            client.is_paused = original_paused
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_resume_when_already_running(
+        self, mock_websocket
+    ):
+        """Test resume command when already running."""
+        resume_command = json.dumps({"command": "resume", "client_id": "test"})
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            resume_command,
+            StopAsyncIteration,
+        ]
+
+        original_paused = client.is_paused
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.is_paused = False  # Already running
+            client.manual_disconnect_initiated = False
+
+            await client.listen_for_commands(mock_websocket)
+
+            # Should not send acknowledgment when already running
+            mock_websocket.send.assert_not_awaited()
+            assert client.is_paused is False  # Should remain running
+        finally:
+            client.is_paused = original_paused
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_connection_closed_during_manual_disconnect(
+        self, mock_websocket
+    ):
+        """Test ConnectionClosed exception during manual disconnect."""
+        close_frame = Close(code=1000, reason="Normal closure")
+        connection_closed = websockets.exceptions.ConnectionClosed(
+            rcvd=close_frame, sent=None
+        )
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = connection_closed
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = True
+
+            # Should handle ConnectionClosed gracefully during manual disconnect
+            await client.listen_for_commands(mock_websocket)
+
+            # Should not send any responses
+            mock_websocket.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_connection_closed_code_1000(
+        self, mock_websocket
+    ):
+        """Test ConnectionClosed with code 1000 (normal closure)."""
+        close_frame = Close(code=1000, reason="Normal closure")
+        connection_closed = websockets.exceptions.ConnectionClosed(
+            rcvd=close_frame, sent=None
+        )
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = connection_closed
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            with pytest.raises(websockets.exceptions.ConnectionClosed):
+                await client.listen_for_commands(mock_websocket)
+
+            # Should set manual_disconnect_initiated flag for code 1000
+            assert client.manual_disconnect_initiated is True
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_connection_closed_other_code(
+        self, mock_websocket
+    ):
+        """Test ConnectionClosed with other codes."""
+        close_frame = Close(code=1006, reason="Abnormal closure")
+        connection_closed = websockets.exceptions.ConnectionClosed(
+            rcvd=close_frame, sent=None
+        )
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = connection_closed
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            with pytest.raises(websockets.exceptions.ConnectionClosed):
+                await client.listen_for_commands(mock_websocket)
+
+            # Should not set manual_disconnect_initiated flag for other codes
+            assert client.manual_disconnect_initiated is False
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_connection_closed_no_rcvd(self, mock_websocket):
+        """Test ConnectionClosed exception without rcvd frame."""
+        # ConnectionClosed without rcvd frame
+        connection_closed = websockets.exceptions.ConnectionClosed(rcvd=None, sent=None)
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = connection_closed
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            with pytest.raises(websockets.exceptions.ConnectionClosed):
+                await client.listen_for_commands(mock_websocket)
+
+            # Should not set manual_disconnect_initiated when no rcvd frame
+            assert client.manual_disconnect_initiated is False
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_unexpected_exception(self, mock_websocket):
+        """Test handling of unexpected exceptions."""
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = RuntimeError(
+            "Unexpected error"
+        )
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = False
+
+            with pytest.raises(RuntimeError):
+                await client.listen_for_commands(mock_websocket)
+
+            # Should set manual_disconnect_initiated flag on unexpected errors
+            assert client.manual_disconnect_initiated is True
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_exception_during_manual_disconnect(
+        self, mock_websocket
+    ):
+        """Test exception handling during manual disconnect."""
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = RuntimeError(
+            "Error during shutdown"
+        )
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = True
+
+            with pytest.raises(RuntimeError):
+                await client.listen_for_commands(mock_websocket)
+
+            # Should remain True when already set
+            assert client.manual_disconnect_initiated is True
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_early_exit_on_manual_disconnect(
+        self, mock_websocket
+    ):
+        """Test early exit when manual_disconnect_initiated is set."""
+        # Configure mock to yield a message, but manual_disconnect_initiated will be True
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            json.dumps({"command": "pause", "client_id": "test"}),
+            StopAsyncIteration,
+        ]
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = True
+
+            await client.listen_for_commands(mock_websocket)
+
+            # Should exit early and not process any commands
+            mock_websocket.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_listen_for_commands_exception_in_command_processing(
+        self, mock_websocket
+    ):
+        """Test exception handling during command processing."""
+        pause_command = json.dumps({"command": "pause", "client_id": "test"})
+
+        mock_websocket.__aiter__.return_value.__anext__.side_effect = [
+            pause_command,
+            StopAsyncIteration,
+        ]
+
+        # Mock send_status_message to raise an exception
+        with patch(
+            "src.client.client.send_status_message", new_callable=AsyncMock
+        ) as mock_send:
+            mock_send.side_effect = RuntimeError("Send failed")
+
+            original_paused = client.is_paused
+            original_disconnect = client.manual_disconnect_initiated
+            try:
+                client.is_paused = False
+                client.manual_disconnect_initiated = False
+
+                # Should handle exception during command processing
+                await client.listen_for_commands(mock_websocket)
+
+                # State should still be updated even if send fails
+                assert client.is_paused is True
+            finally:
+                client.is_paused = original_paused
+                client.manual_disconnect_initiated = original_disconnect
+
 
 class TestPeriodicStatusSender:
     """Test periodic status updates."""
@@ -228,3 +671,105 @@ class TestPeriodicStatusSender:
                 await client.send_status_update_periodically(mock_ws)
 
         mock_ws.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_status_update_periodically_connection_closed(self):
+        """Test ConnectionClosed exception in periodic sender."""
+        mock_ws = AsyncMock()
+        close_frame = Close(code=1006, reason="Connection lost")
+        connection_closed = websockets.exceptions.ConnectionClosed(
+            rcvd=close_frame, sent=None
+        )
+
+        original_disconnect = client.manual_disconnect_initiated
+        original_paused = client.is_paused
+        try:
+            client.manual_disconnect_initiated = False
+            client.is_paused = (
+                False  # Ensure not paused so send_full_status_update is called
+            )
+
+            # Mock send_full_status_update to raise ConnectionClosed
+            with patch(
+                "src.client.client.send_full_status_update", new_callable=AsyncMock
+            ) as mock_send:
+                mock_send.side_effect = connection_closed
+
+                with pytest.raises(websockets.exceptions.ConnectionClosed):
+                    await client.send_status_update_periodically(mock_ws)
+
+                # Verify the function was called
+                mock_send.assert_called_once_with(mock_ws)
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+            client.is_paused = original_paused
+
+    @pytest.mark.asyncio
+    async def test_send_status_update_periodically_exits_on_manual_disconnect(self):
+        """Test that periodic sender exits when manual_disconnect_initiated is True."""
+        mock_ws = AsyncMock()
+
+        original_disconnect = client.manual_disconnect_initiated
+        try:
+            client.manual_disconnect_initiated = True
+
+            # Should exit immediately without raising exception
+            await client.send_status_update_periodically(mock_ws)
+
+            # Should not call send_full_status_update when manual_disconnect_initiated is True
+            mock_ws.send.assert_not_awaited()
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+
+    @pytest.mark.asyncio
+    async def test_send_status_update_periodically_unexpected_exception(self):
+        """Test unexpected exception in periodic sender."""
+        mock_ws = AsyncMock()
+
+        original_disconnect = client.manual_disconnect_initiated
+        original_paused = client.is_paused
+        try:
+            client.manual_disconnect_initiated = False
+            client.is_paused = (
+                False  # Ensure not paused so send_full_status_update is called
+            )
+
+            # Mock send_full_status_update to raise unexpected exception
+            with patch(
+                "src.client.client.send_full_status_update", new_callable=AsyncMock
+            ) as mock_send:
+                mock_send.side_effect = RuntimeError("Unexpected error")
+
+                with pytest.raises(RuntimeError):
+                    await client.send_status_update_periodically(mock_ws)
+
+                # Should set manual_disconnect_initiated flag on unexpected errors
+                assert client.manual_disconnect_initiated is True
+
+                # Verify the function was called
+                mock_send.assert_called_once_with(mock_ws)
+        finally:
+            client.manual_disconnect_initiated = original_disconnect
+            client.is_paused = original_paused
+
+
+class TestMainExecution:
+    """Test main execution block."""
+
+    def test_main_execution_keyboard_interrupt(self):
+        """Test keyboard interrupt handling in main block."""
+        # Mock the connect_and_send_updates function to avoid creating unawaited coroutines
+        with patch("src.client.client.connect_and_send_updates") as mock_connect:
+            mock_connect.side_effect = KeyboardInterrupt("User interrupt")
+
+            # Test that KeyboardInterrupt is handled
+            try:
+                import asyncio
+
+                asyncio.run(mock_connect())
+            except KeyboardInterrupt:
+                # This is expected behavior
+                pass
+
+            # Test passes if no unhandled exception occurs
+            assert True

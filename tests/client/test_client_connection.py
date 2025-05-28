@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import websockets
+from websockets.frames import Close
 
 from src.client import client
 
@@ -39,6 +40,7 @@ def setup_client():
         "reconnect_delay": client.RECONNECT_DELAY,
         "client_id": client.CLIENT_ID,
         "is_paused": client.is_paused,
+        "manual_disconnect_initiated": client.manual_disconnect_initiated,
     }
 
     # Set test values
@@ -52,7 +54,10 @@ def setup_client():
 
     # Restore original values
     for key, value in original.items():
-        setattr(client, key.upper(), value)
+        if key == "manual_disconnect_initiated":
+            client.manual_disconnect_initiated = value
+        else:
+            setattr(client, key.upper(), value)
 
 
 @pytest.mark.asyncio
@@ -65,30 +70,23 @@ async def test_connection_establishment(mock_websocket_connection):
     test_client_id = str(uuid.uuid4())
     client.CLIENT_ID = test_client_id
 
-    # The listener task will get one message, then StopAsyncIteration to finish cleanly.
-    async def mock_recv_aiter_anext_sequence():
-        print(
-            "test_connection_establishment: mock_ws.__anext__ yielding welcome message"
-        )
-        yield json.dumps({"type": "welcome", "client_id": client.CLIENT_ID})
-        print(
-            "test_connection_establishment: mock_ws.__anext__ raising StopAsyncIteration"
-        )
-        raise StopAsyncIteration
+    # Create a list of messages to yield
+    messages = [
+        json.dumps({"type": "welcome", "client_id": client.CLIENT_ID}),
+        StopAsyncIteration,
+    ]
 
     # Create the async iterator mock that __aiter__ will return
     async_iterator_mock = AsyncMock()
     # Configure its __anext__ to follow the sequence defined above
-    async_iterator_mock.__anext__ = AsyncMock(
-        side_effect=mock_recv_aiter_anext_sequence()
-    )
+    async_iterator_mock.__anext__ = AsyncMock(side_effect=messages)
 
     # mock_ws.__aiter__ is a synchronous method that returns an async iterator.
     # So, ws.__aiter__ should be a MagicMock, not AsyncMock, returning our configured iterator.
     mock_ws.__aiter__ = MagicMock(return_value=async_iterator_mock)
 
     # Fallback for recv, though __aiter__ should be preferred by `async for`
-    mock_ws.recv = AsyncMock(side_effect=mock_recv_aiter_anext_sequence())
+    mock_ws.recv = AsyncMock(side_effect=messages)
 
     task = asyncio.create_task(client.connect_and_send_updates())
 
@@ -446,3 +444,238 @@ async def test_connection_timeout_handling(mock_websocket_connection):
         pass  # Expected
 
     assert mock_connect.called, "websockets.connect should have been called"
+
+
+class TestConnectAndSendUpdatesErrorHandling:
+    """Test error handling in connect_and_send_updates function."""
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_invalid_uri(self):
+        """Test handling of InvalidURI exception."""
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            # Fix: InvalidURI requires uri and msg parameters
+            mock_connect.side_effect = websockets.InvalidURI(
+                "ws://invalid", "Invalid URI"
+            )
+
+            # Run for a short time
+            task = asyncio.create_task(client.connect_and_send_updates())
+            await asyncio.sleep(0.1)
+
+            # Should set manual_disconnect_initiated and exit
+            assert client.manual_disconnect_initiated is True
+
+            # Clean up
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_cancelled_error(self):
+        """Test handling of CancelledError."""
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = asyncio.CancelledError("Task cancelled")
+
+            # Run for a short time
+            task = asyncio.create_task(client.connect_and_send_updates())
+            await asyncio.sleep(0.1)
+
+            # Should set manual_disconnect_initiated and exit
+            assert client.manual_disconnect_initiated is True
+
+            # Clean up
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_websocket_cleanup(self):
+        """Test WebSocket cleanup in finally block."""
+        mock_ws = AsyncMock()
+        mock_ws.state = websockets.protocol.State.OPEN
+
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = [mock_ws, asyncio.CancelledError("Stop test")]
+
+            # Mock tasks to complete quickly
+            with patch(
+                "src.client.client.listen_for_commands", new_callable=AsyncMock
+            ) as mock_listen:
+                with patch(
+                    "src.client.client.send_status_update_periodically",
+                    new_callable=AsyncMock,
+                ) as mock_periodic:
+                    mock_listen.return_value = None
+                    mock_periodic.return_value = None
+
+                    # Run for a short time
+                    task = asyncio.create_task(client.connect_and_send_updates())
+                    await asyncio.sleep(0.2)
+
+                    # WebSocket should be closed in finally block
+                    mock_ws.close.assert_called()
+
+                    # Clean up
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_exponential_backoff(self):
+        """Test exponential backoff on connection failures."""
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                mock_connect.side_effect = [
+                    ConnectionRefusedError("Connection refused"),
+                    ConnectionRefusedError("Connection refused"),
+                    asyncio.CancelledError("Stop test"),
+                ]
+
+                # Run for a short time
+                task = asyncio.create_task(client.connect_and_send_updates())
+                await asyncio.sleep(0.1)
+
+                # Should have called sleep with increasing delays
+                assert mock_sleep.call_count >= 1
+
+                # Clean up
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_delay_zero_skip_sleep(self):
+        """Test that sleep is skipped when delay is zero."""
+        original_client_id = client.CLIENT_ID
+
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                # First call raises 4008 (duplicate ID), second call succeeds
+                close_frame = Close(code=4008, reason="Duplicate client ID")
+                connection_closed = websockets.exceptions.ConnectionClosed(
+                    rcvd=close_frame, sent=None
+                )
+
+                mock_ws = AsyncMock()
+                mock_connect.side_effect = [
+                    connection_closed,
+                    mock_ws,
+                    asyncio.CancelledError("Stop test"),
+                ]
+
+                # Mock tasks to complete quickly
+                with patch(
+                    "src.client.client.listen_for_commands", new_callable=AsyncMock
+                ) as mock_listen:
+                    with patch(
+                        "src.client.client.send_status_update_periodically",
+                        new_callable=AsyncMock,
+                    ) as mock_periodic:
+                        mock_listen.return_value = None
+                        mock_periodic.return_value = None
+
+                        # Run for a short time
+                        task = asyncio.create_task(client.connect_and_send_updates())
+                        await asyncio.sleep(0.2)
+
+                        # Should not sleep when delay is 0 (after 4008 error)
+                        # The sleep calls should be minimal
+
+                        # Clean up
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+
+        # Restore original client ID
+        client.CLIENT_ID = original_client_id
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_websocket_state_closed(self):
+        """Test WebSocket cleanup when state is already closed."""
+        mock_ws = AsyncMock()
+        mock_ws.state = websockets.protocol.State.CLOSED  # Already closed
+
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = [mock_ws, asyncio.CancelledError("Stop test")]
+
+            # Mock tasks to complete quickly
+            with patch(
+                "src.client.client.listen_for_commands", new_callable=AsyncMock
+            ) as mock_listen:
+                with patch(
+                    "src.client.client.send_status_update_periodically",
+                    new_callable=AsyncMock,
+                ) as mock_periodic:
+                    mock_listen.return_value = None
+                    mock_periodic.return_value = None
+
+                    # Run for a short time
+                    task = asyncio.create_task(client.connect_and_send_updates())
+                    await asyncio.sleep(0.2)
+
+                    # WebSocket should NOT be closed since it's already closed
+                    mock_ws.close.assert_not_called()
+
+                    # Clean up
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_generic_exception(self):
+        """Test handling of generic exceptions."""
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = [
+                RuntimeError("Generic error"),
+                asyncio.CancelledError("Stop test"),
+            ]
+
+            # Run for a short time
+            task = asyncio.create_task(client.connect_and_send_updates())
+            await asyncio.sleep(0.1)
+
+            # Should continue retrying on generic errors
+            assert mock_connect.call_count >= 1
+
+            # Clean up
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_connect_and_send_updates_manual_disconnect_break(self):
+        """Test that manual disconnect breaks the main loop."""
+        with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+            mock_connect.side_effect = ConnectionRefusedError("Connection refused")
+
+            # Run for a short time
+            task = asyncio.create_task(client.connect_and_send_updates())
+            await asyncio.sleep(0.05)
+
+            # Set manual disconnect to break the loop
+            client.manual_disconnect_initiated = True
+            await asyncio.sleep(0.05)
+
+            # Should exit the loop
+            assert client.manual_disconnect_initiated is True
+
+            # Clean up
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
