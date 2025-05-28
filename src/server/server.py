@@ -518,6 +518,7 @@ async def pause_client(client_id: str):
     logger.info(f"Received HTTP request to pause client {client_id}")
     websocket = worker_connections.get(client_id)
     target_client_exists_in_redis = True
+    websocket_warning = False
 
     if not websocket:
         client_info = await get_client_info(client_id)
@@ -535,6 +536,7 @@ async def pause_client(client_id: str):
         logger.warning(
             f"Client {client_id} not actively connected via WebSocket for pause. Updating state in Redis only."
         )
+        websocket_warning = True
     else:
         try:
             await websocket.send_text(json.dumps({"command": "pause"}))
@@ -550,7 +552,9 @@ async def pause_client(client_id: str):
             # The client's own WebSocket handler or cleanup task will mark it disconnected in Redis.
         except Exception as e:
             logger.error(f"Error sending pause command to client {client_id}: {e}")
-            # Depending on policy, you might still want to update Redis state to paused, or raise error.
+            # Remove from connections on any error
+            if client_id in worker_connections:
+                del worker_connections[client_id]
             raise HTTPException(
                 status_code=500,
                 detail=f"Error sending pause command to client {client_id}.",
@@ -560,9 +564,15 @@ async def pause_client(client_id: str):
     if target_client_exists_in_redis:
         await update_client_status(client_id, status_update)
         await broadcast_client_state_change(client_id, status_update)
-        return {
-            "message": f"Pause command processed for client {client_id}. State updated and broadcasted."
-        }
+
+        if websocket_warning:
+            return {
+                "message": f"Pause command processed for client {client_id}. Client not actively connected via WebSocket, but state updated and broadcasted."
+            }
+        else:
+            return {
+                "message": f"Pause command processed for client {client_id}. State updated and broadcasted."
+            }
     else:
         # Should have been caught by the HTTPException above, but as a safeguard:
         return {
@@ -575,6 +585,7 @@ async def resume_client(client_id: str):
     logger.info(f"Received HTTP request to resume client {client_id}")
     websocket = worker_connections.get(client_id)
     target_client_exists_in_redis = True
+    websocket_warning = False
 
     if not websocket:
         client_info = await get_client_info(client_id)
@@ -585,12 +596,13 @@ async def resume_client(client_id: str):
             )
             raise HTTPException(
                 status_code=404,
-                detail=f"Client {client_id} not found or already disconnected (and not active via WS).",
+                detail=f"Client {client_id} not found or already disconnected.",
             )
         # If client_info.client_state is already 'running', this is a redundant call but harmless.
         logger.warning(
             f"Client {client_id} not actively connected via WebSocket for resume. Updating state in Redis only."
         )
+        websocket_warning = True
     else:
         try:
             await websocket.send_text(json.dumps({"command": "resume"}))
@@ -603,6 +615,9 @@ async def resume_client(client_id: str):
                 del worker_connections[client_id]
         except Exception as e:
             logger.error(f"Error sending resume command to client {client_id}: {e}")
+            # Remove from connections on any error
+            if client_id in worker_connections:
+                del worker_connections[client_id]
             raise HTTPException(
                 status_code=500,
                 detail=f"Error sending resume command to client {client_id}.",
@@ -612,9 +627,15 @@ async def resume_client(client_id: str):
     if target_client_exists_in_redis:
         await update_client_status(client_id, status_update)
         await broadcast_client_state_change(client_id, status_update)
-        return {
-            "message": f"Resume command processed for client {client_id}. State updated and broadcasted."
-        }
+
+        if websocket_warning:
+            return {
+                "message": f"Resume command processed for client {client_id}. Client not actively connected via WebSocket, but state updated and broadcasted."
+            }
+        else:
+            return {
+                "message": f"Resume command processed for client {client_id}. State updated and broadcasted."
+            }
     else:
         return {
             "message": f"Resume command for client {client_id} could not be fully processed as client was not found in an active state."
