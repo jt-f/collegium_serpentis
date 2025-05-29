@@ -53,6 +53,20 @@ def get_current_status_payload() -> dict:
     }
 
 
+async def send_registration_message(websocket):
+    """Sends the initial registration message to the server."""
+    registration_payload = {
+        "type": "register",
+        "client_id": CLIENT_ID,
+        "client_name": CLIENT_NAME,
+        "client_role": CLIENT_ROLE,
+        "client_type": CLIENT_TYPE,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    await websocket.send(json.dumps(registration_payload))
+    print(f"Sent registration message: {registration_payload}")
+
+
 async def send_status_message(websocket, status_attributes: dict):
     # Allow sending disconnect acknowledgment even if manual_disconnect_initiated is true
     is_disconnect_ack = status_attributes.get("acknowledged_command") == "disconnect"
@@ -239,7 +253,10 @@ async def connect_and_send_updates():
             print(f"Client {CLIENT_ID} connected to {SERVER_URL}")
             delay = RECONNECT_DELAY  # Reset delay on successful connection
 
-            # Initial full status update upon connection
+            # Send initial registration message
+            await send_registration_message(websocket)
+
+            # Initial full status update upon connection (after registration)
             initial_status = {
                 "client_name": CLIENT_NAME,
                 "client_state": "running",

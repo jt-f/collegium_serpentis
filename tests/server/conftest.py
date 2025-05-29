@@ -3,8 +3,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch  # Added MagicMock
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+
+from fastapi import (  # isort: skip
+    FastAPI,  # isort: skip
+    WebSocketDisconnect,  # isort: skip
+)
+from fastapi.testclient import TestClient  # isort: skip
 
 
 @pytest.fixture(scope="function")
@@ -91,3 +95,32 @@ class ErringAsyncIterator:
                 raise self.error_to_raise()
             raise self.error_to_raise
         raise StopAsyncIteration
+
+
+@pytest.fixture
+def setup_websocket_with_error():
+    """Factory fixture to create a mock WebSocket that errors on send_text."""
+
+    def _setup_websocket_with_error(error_type: str, message: str):
+        mock_ws = AsyncMock()
+
+        if error_type == "disconnect":
+            exc = WebSocketDisconnect(code=1006, reason=message)
+            mock_ws.send_text = AsyncMock(side_effect=exc)
+        elif error_type == "runtime":
+            exc = RuntimeError(message)
+            mock_ws.send_text = AsyncMock(side_effect=exc)
+        elif error_type == "value":  # For generic unexpected errors
+            exc = ValueError(message)
+            mock_ws.send_text = AsyncMock(side_effect=exc)
+        else:
+            raise ValueError(f"Unsupported error_type for mock WebSocket: {error_type}")
+
+        # Mock other necessary attributes if tests require them, e.g., client_state
+        mock_ws.client_state = MagicMock()
+        # mock_ws.application_state = MagicMock() # If needed
+        # mock_ws.client = ('127.0.0.1', 12345) # If needed
+
+        return mock_ws
+
+    return _setup_websocket_with_error
