@@ -122,6 +122,16 @@ function App() {
                 if (message.result === 'message_processed' && message.client_id === frontendClientId.current) {
                     console.log("Frontend registration acknowledged by server.");
                     if (message.redis_status) setRedisStatus(message.redis_status);
+                } else if (message.type === 'control_response') {
+                    console.log('Control response received:', message);
+                    if (message.status === 'error') {
+                        console.error(`Control action '${message.action}' for client '${message.target_client_id}' failed: ${message.message}`);
+                        // Optionally, set an error state to display to the user
+                        // setError(`Action ${message.action} on ${message.target_client_id} failed: ${message.message}`);
+                    } else {
+                        console.log(`Control action '${message.action}' for client '${message.target_client_id}' was successful: ${message.message}`);
+                        // Optionally, show a success notification
+                    }
                 }
 
                 if (isLoading && (message.type === 'all_clients_update' || (message.client_id && message.status))) {
@@ -213,30 +223,31 @@ function App() {
     }, [wsStatus, isLoading]); // Re-evaluate polling based on wsStatus and isLoading
 
     // Client Action Handlers
-    const handleClientAction = async (clientId, action) => {
-        console.log(`Attempting to ${action} client: ${clientId}`);
-        try {
-            const response = await fetch(`/api/v1/clients/${clientId}/${action}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                throw new Error(`Failed to ${action} client ${clientId}: ${response.status} ${errorData.detail || response.statusText}`);
+    const handleClientAction = (clientId, action) => {
+        console.log(`Attempting to ${action} client via WebSocket: ${clientId}`);
+        if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
+            const messageId = `${Date.now()}-${generateRandomString(4)}`;
+            const controlMessage = {
+                type: "control",
+                action: action,
+                target_client_id: clientId,
+                message_id: messageId
+            };
+            try {
+                websocket.current.send(JSON.stringify(controlMessage));
+                console.log(`Sent ${action} command for ${clientId}, message_id: ${messageId}`);
+                // The response will be handled by the onmessage handler
+            } catch (err) {
+                console.error(`Error sending ${action} command for ${clientId} via WebSocket:`, err);
+                setError(`Failed to send ${action} command: WebSocket error. Please check connection.`);
             }
-            const result = await response.json();
-            console.log(`${action} client ${clientId} successful:`, result);
-            // Optionally, trigger a manual refresh or wait for WebSocket update
-            // For now, we assume WebSocket will provide the updated status or server confirms via HTTP response.
-            // If the action directly changes status (like disconnect), 
-            // the server's broadcast should update the UI.
-            // If using HTTP polling as primary, you might want to trigger a manual poll here:
-            // fetchClients(); // (if fetchClients is exposed or part of a useCallback)
-        } catch (err) {
-            console.error(`Error ${action}ing client ${clientId}:`, err);
-            setError(`Failed to ${action} client: ${err.message}`); // Display error to user
+        } else {
+            console.error(`Cannot ${action} client ${clientId}: WebSocket is not connected.`);
+            setError('WebSocket is not connected. Please check connection and try again.');
+            // Optionally, try to reconnect or notify user more prominently
+            if (!websocket.current || websocket.current.readyState === WebSocket.CLOSED) {
+                connectWebSocket(); // Attempt to reconnect if fully closed
+            }
         }
     };
 

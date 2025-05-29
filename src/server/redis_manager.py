@@ -150,9 +150,7 @@ async def perform_cleanup_cycle():
             client_id = key.split(":")[1]
             status_data_raw = await redis_client.hgetall(key)
 
-            status_data = {
-                k.decode(): v.decode() for k, v in status_data_raw.items()
-            }
+            status_data = {k.decode(): v.decode() for k, v in status_data_raw.items()}
 
             if status_data.get("connected") == "false":
                 disconnect_time_str = status_data.get("disconnect_time")
@@ -176,7 +174,7 @@ async def perform_cleanup_cycle():
                 f"Deleting data for disconnected client {client_id} from Redis."
             )
             await redis_client.delete(f"client:{client_id}:status")
-        
+
         if clients_to_delete:
             logger.debug(
                 f"Finished Redis cleanup, deleted {len(clients_to_delete)} clients."
@@ -231,17 +229,25 @@ async def get_all_client_statuses() -> (
         )
     except (TimeoutError, redis.ConnectionError) as e:
         error_msg = str(e)
-        logger.error("Failed to fetch client statuses from Redis (Connection Error)", error=error_msg)
+        logger.error(
+            "Failed to fetch client statuses from Redis (Connection Error)",
+            error=error_msg,
+        )
         status_store["redis"] = "unavailable"
         data_source = "error"
-    except redis.RedisError as e: 
+    except redis.RedisError as e:
         error_msg = str(e)
-        logger.error("Failed to fetch client statuses from Redis (RedisError)", error=error_msg)
-        status_store["redis"] = "unavailable" 
+        logger.error(
+            "Failed to fetch client statuses from Redis (RedisError)", error=error_msg
+        )
+        status_store["redis"] = "unavailable"
         data_source = "error"
     except Exception as e:
         error_msg = str(e)
-        logger.error("Failed to fetch client statuses from Redis (Unknown Error)", error=error_msg)
+        logger.error(
+            "Failed to fetch client statuses from Redis (Unknown Error)",
+            error=error_msg,
+        )
         status_store["redis"] = "unavailable"
         data_source = "error"
 
@@ -258,19 +264,23 @@ async def get_client_info(client_id: str) -> dict[str, str] | None:
         redis_key = f"client:{client_id}:status"
         client_info_redis_raw = await redis_client.hgetall(redis_key)
         if client_info_redis_raw:
-            return {
-                k.decode(): v.decode() for k, v in client_info_redis_raw.items()
-            }
-        return None 
+            return {k.decode(): v.decode() for k, v in client_info_redis_raw.items()}
+        return None
     except (TimeoutError, redis.ConnectionError) as e:
         status_store["redis"] = "unavailable"
-        logger.warning(f"Could not retrieve client {client_id} status from Redis (Connection Error): {e}")
+        logger.warning(
+            f"Could not retrieve client {client_id} status from Redis (Connection Error): {e}"
+        )
         return None
     except redis.RedisError as e:
-        logger.warning(f"Could not retrieve client {client_id} status from Redis (RedisError): {e}")
+        logger.warning(
+            f"Could not retrieve client {client_id} status from Redis (RedisError): {e}"
+        )
         return None
     except Exception as e:
-        logger.warning(f"Could not retrieve client {client_id} status from Redis (Unknown Error): {e}")
+        logger.warning(
+            f"Could not retrieve client {client_id} status from Redis (Unknown Error): {e}"
+        )
         return None
 
 
