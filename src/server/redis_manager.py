@@ -2,7 +2,7 @@
 
 import asyncio
 import random
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 from typing import Any
 
 import redis
@@ -42,7 +42,7 @@ async def redis_health_check() -> None:
                 "Redis connection lost",
                 error=str(e),
                 previous_status=old_status,
-                timestamp=datetime.now(UTC).isoformat(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
             )
         except Exception as e:
             old_status = status_store["redis"]
@@ -137,7 +137,7 @@ async def perform_cleanup_cycle():
     """Perform one cycle of client cleanup. This function can be tested directly."""
     max_disconnect_duration = 60  # 1 minute in seconds
     logger.debug("Running cleanup for disconnected clients...")
-    current_time = datetime.now(UTC)
+    current_time = datetime.now(timezone.utc)
     clients_to_delete = []
 
     if status_store["redis"] != "connected":
