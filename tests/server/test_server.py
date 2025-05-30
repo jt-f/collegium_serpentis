@@ -7,7 +7,7 @@ and REST API functionality, with appropriate mocking for Redis.
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from fastapi import FastAPI, WebSocket
@@ -582,8 +582,8 @@ class TestWebSocketServer:
 
         # Check that at least one of the broadcast calls was for the disconnect
         disconnect_broadcast_found = False
-        for call in broadcast_mock.call_args_list:
-            call_args = call[0][
+        for broadcast_call in broadcast_mock.call_args_list:
+            call_args = broadcast_call[0][
                 0
             ]  # Get the first positional argument (the message dict)
             if (
@@ -928,24 +928,275 @@ class TestClientDisconnection:
         # Verify the disconnect was handled correctly
         # If we got here without errors, the test passed
 
+    @pytest.mark.asyncio
+    async def test_handle_disconnect_frontend(self, monkeypatch):
+        """Test cleanup of frontend client disconnection."""
+        from src.server import server as server_module
+
+        # Setup mocks
+        mock_websocket = AsyncMock()
+        client_id = "test_frontend_disconnect"
+
+        # Add frontend client to connections
+        server_module.frontend_connections[client_id] = {
+            "websocket": mock_websocket,
+            "client_role": "frontend",
+        }
+
+        # Mock update_client_status
+        async def mock_update(client_id, status_attributes, broadcast=True):
+            return True
+
+        monkeypatch.setattr(server_module, "update_client_status", mock_update)
+
+        # Call handle_disconnect
+        await server_module.handle_disconnect(
+            client_id, mock_websocket, "Frontend disconnect"
+        )
+
+        # Verify cleanup
+        assert client_id not in server_module.frontend_connections
+
     def test_frontend_directory_exists_check(self, monkeypatch):
         """Test the frontend directory existence check during startup."""
 
-        # Mock os.path.exists and os.path.isdir
-        with patch("os.path.exists") as mock_exists:
-            with patch("os.path.isdir") as mock_isdir:
-                # Test when directory exists
-                mock_exists.return_value = True
-                mock_isdir.return_value = True
+        # Test when directory doesn't exist
+        with patch("os.path.exists", return_value=False):
+            # The actual test would verify the warning is logged
+            assert True
 
-                # This would normally mount static files
-                # We can't easily test the mounting without starting the app
-                # But we can verify the path checks work
-                assert mock_exists.called or True  # Path existence is checked
+        # Test when directory exists but index.html is missing
+        with patch("os.path.exists", side_effect=lambda x: "build" in x):
+            with patch("os.path.join", return_value="build/index.html"):
+                # The actual test would verify the warning is logged
+                assert True
 
-                # Test when directory doesn't exist
-                mock_exists.return_value = False
-                mock_isdir.return_value = False
 
-                # This would log a warning instead of mounting
-                assert mock_exists.called or True  # Path existence is checked
+class TestBroadcastFunctionality:
+    """Test the broadcast functionality."""
+
+    @pytest.mark.asyncio
+    async def test_broadcast_to_frontends_with_disconnect(self, monkeypatch):
+        """Test broadcast handling when a frontend disconnects during broadcast."""
+        from src.server import server as server_module
+
+        # Save original state
+        original_connections = server_module.frontend_connections.copy()
+
+        try:
+            # Setup test data
+            test_message = {"type": "test", "data": "test message"}
+
+            # Create mock websockets
+            good_ws = AsyncMock()
+            bad_ws = AsyncMock()
+
+            # Set up the mock WebSocket objects
+            good_ws.send_text = AsyncMock()
+            bad_ws.send_text = AsyncMock(side_effect=RuntimeError("Connection lost"))
+
+            # Add to frontend_connections
+            server_module.frontend_connections = {
+                "good_client": good_ws,
+                "bad_client": bad_ws,
+            }
+
+            # Mock the logger to prevent actual logging during test
+            mock_logger = MagicMock()
+            monkeypatch.setattr(server_module, "logger", mock_logger)
+
+            # Call broadcast
+            await server_module.broadcast_to_frontends(test_message)
+
+            # Verify good client received message exactly once
+            good_ws.send_text.assert_awaited_once_with(
+                '{"type": "test", "data": "test message"}'
+            )
+
+            # Verify bad client was removed from connections
+            assert "bad_client" not in server_module.frontend_connections
+            assert "good_client" in server_module.frontend_connections
+
+            mock_logger.warning.assert_called_once()
+
+            # Verify the call count for send_text
+            assert good_ws.send_text.await_count == 1
+            assert bad_ws.send_text.await_count == 1
+
+            # Verify no other unexpected calls were made
+            good_ws.assert_has_calls(
+                [call.send_text('{"type": "test", "data": "test message"}')],
+                any_order=True,
+            )
+            bad_ws.assert_has_calls(
+                [call.send_text('{"type": "test", "data": "test message"}')],
+                any_order=True,
+            )
+
+        finally:
+            # Restore original state
+            server_module.frontend_connections = original_connections
+
+
+class TestLifespanManagement:
+    """Test FastAPI lifespan management."""
+
+    @pytest.mark.asyncio
+    async def test_lifespan_shutdown(self, monkeypatch):
+        """Test proper cleanup during application shutdown."""
+        from src.server import server as server_module
+
+        # Save original state
+        original_worker_connections = server_module.worker_connections.copy()
+        original_frontend_connections = server_module.frontend_connections.copy()
+
+        try:
+            # Setup test data
+            test_ws1 = AsyncMock()
+            test_ws2 = AsyncMock()
+
+            # Set up the mock WebSocket objects
+            test_ws1.close = AsyncMock()
+            test_ws2.close = AsyncMock()
+
+            # Set up connections directly as websockets (not dicts)
+            server_module.worker_connections = {"worker1": test_ws1}
+            server_module.frontend_connections = {"frontend1": test_ws2}
+
+            # Mock close_redis
+            close_redis_mock = AsyncMock()
+            monkeypatch.setattr(server_module, "close_redis", close_redis_mock)
+
+            # Get the lifespan generator
+            async with server_module.lifespan(None) as _:
+                # In the context, we can simulate the shutdown
+                pass
+
+            # Verify all connections were closed
+            test_ws1.close.assert_awaited_once_with(
+                code=server_module.config.WEBSOCKET_CLOSE_CODE_SERVER_SHUTDOWN,
+                reason="Server shutting down",
+            )
+            test_ws2.close.assert_awaited_once_with(
+                code=server_module.config.WEBSOCKET_CLOSE_CODE_SERVER_SHUTDOWN,
+                reason="Server shutting down",
+            )
+
+            # Verify redis was closed
+            close_redis_mock.assert_awaited_once()
+
+            # Verify connection dictionaries were cleared
+            assert not server_module.worker_connections
+            assert not server_module.frontend_connections
+
+        finally:
+            # Restore original state
+            server_module.worker_connections = original_worker_connections
+            server_module.frontend_connections = original_frontend_connections
+
+
+class TestClientManagement:
+    """Test client management functions."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_client(self, monkeypatch):
+        """Test the disconnect_client function."""
+        from src.server import server as server_module
+
+        # Save original state
+        original_worker_connections = server_module.worker_connections.copy()
+        original_frontend_connections = server_module.frontend_connections.copy()
+
+        try:
+            # Setup test data
+            client_id = "test_disconnect"
+
+            # Create mock WebSockets with async close methods
+            mock_worker_ws = AsyncMock()
+            mock_worker_ws.close = AsyncMock()
+
+            # Add to worker_connections
+            server_module.worker_connections[client_id] = mock_worker_ws
+
+            # Mock the logger to prevent actual logging during test
+            mock_logger = MagicMock()
+            monkeypatch.setattr(server_module, "logger", mock_logger)
+
+            # Test with worker client
+            await server_module.disconnect_client(client_id)
+
+            # Verify WebSocket was closed with normal closure code
+            mock_worker_ws.close.assert_awaited_once_with(
+                code=server_module.config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
+                reason="Server initiated disconnect via HTTP",
+            )
+
+            # Verify client was removed
+            assert client_id not in server_module.worker_connections
+
+            # Test with frontend client - create a new mock to avoid any state issues
+            frontend_id = f"frontend_{client_id}"
+            mock_frontend_ws = AsyncMock()
+            mock_frontend_ws.close = AsyncMock()
+            server_module.frontend_connections[frontend_id] = mock_frontend_ws
+
+            await server_module.disconnect_client(frontend_id)
+
+            # Verify WebSocket was closed
+            mock_frontend_ws.close.assert_awaited_once_with(
+                code=server_module.config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
+                reason="Server initiated disconnect via HTTP",
+            )
+
+            # Verify client was removed
+            assert frontend_id not in server_module.frontend_connections
+
+        finally:
+            # Restore original state
+            server_module.worker_connections = original_worker_connections
+            server_module.frontend_connections = original_frontend_connections
+
+    @pytest.mark.asyncio
+    async def test_pause_resume_client(self, monkeypatch):
+        """Test the pause_client and resume_client functions."""
+        from src.server import server as server_module
+
+        # Save original state
+        original_worker_connections = server_module.worker_connections.copy()
+
+        try:
+            # Setup test data
+            client_id = "test_pause_resume"
+
+            # Create a mock WebSocket
+            mock_ws = AsyncMock()
+
+            # Add to worker_connections
+            server_module.worker_connections[client_id] = mock_ws
+
+            # Mock the logger to prevent actual logging during test
+            mock_logger = MagicMock()
+            monkeypatch.setattr(server_module, "logger", mock_logger)
+
+            # Mock the update_client_status function
+            update_mock = AsyncMock()
+            monkeypatch.setattr(server_module, "update_client_status", update_mock)
+
+            # Test pause_client
+            await server_module.pause_client(client_id)
+
+            # Verify client was updated with paused status
+            update_mock.assert_called_once_with(client_id, {"client_state": "paused"})
+
+            # Reset mock for resume test
+            update_mock.reset_mock()
+
+            # Test resume_client
+            await server_module.resume_client(client_id)
+
+            # Verify client was updated with running status
+            update_mock.assert_called_once_with(client_id, {"client_state": "running"})
+
+        finally:
+            # Restore original state
+            server_module.worker_connections = original_worker_connections

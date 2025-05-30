@@ -646,9 +646,10 @@ async def update_client_status(
         return False
 
 
-async def disconnect_client(client_id: str) -> dict:
+async def disconnect_client(client_id: str, websocket: WebSocket | None = None) -> dict:
     logger.info(f"Processing disconnect request for client {client_id}")
     websocket_to_close = worker_connections.get(client_id)
+    frontend_websocket_to_close = frontend_connections.get(client_id)
 
     client_already_disconnected = False
     client_info_pre_disconnect = await get_client_info(client_id)
@@ -658,56 +659,38 @@ async def disconnect_client(client_id: str) -> dict:
     ):
         client_already_disconnected = True
 
-    if not websocket_to_close:
-        if client_already_disconnected:
-            logger.info(
-                f"Client {client_id} is already marked as disconnected in Redis."
-            )
-        else:
-            logger.warning(
-                f"Client {client_id} not actively in worker_connections for disconnect attempt."
-            )
-        # Still proceed to update Redis status to disconnected even if no active WebSocket connection
-
+    # Try worker connection first
     if websocket_to_close:
         try:
-            logger.info(
-                f"Sending disconnect command to client {client_id} via WebSocket"
-            )
-            await websocket_to_close.send_text(json.dumps({"command": "disconnect"}))
-            logger.info(f"Disconnect command sent to client {client_id}")
-            # Give the client a brief moment to process the command before closing the socket
-            await asyncio.sleep(0.1)  # ADDED SMALL DELAY
-        except (WebSocketDisconnect, RuntimeError) as e:
-            logger.warning(
-                f"Could not send disconnect command to client {client_id} (already disconnected or WebSocket error): {e}"
-            )
-        except Exception as e:
-            logger.error(
-                f"Unexpected error sending disconnect command to client {client_id}: {e}"
-            )
-
-        try:
-            logger.info(
-                f"Closing WebSocket connection for client {client_id} from server-side (HTTP request)"
-            )
             await websocket_to_close.close(
                 code=config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
                 reason="Server initiated disconnect via HTTP",
             )
-        except RuntimeError as e:
-            logger.warning(
-                f"Error closing WebSocket for client {client_id} (may already be closing or closed): {e}"
+            logger.info(
+                f"Closed WebSocket connection for client {client_id} from server-side (HTTP request)"
             )
-        except Exception as e:
-            logger.error(
-                f"Unexpected error closing WebSocket for client {client_id}: {e}"
+        except (WebSocketDisconnect, RuntimeError) as e:
+            logger.warning(
+                f"Client {client_id} disconnected or error closing WebSocket: {e}"
             )
         finally:
-            # Ensure the client is removed from active connections
-            if client_id in worker_connections:
-                del worker_connections[client_id]
-                logger.info(f"Removed client {client_id} from worker_connections")
+            del worker_connections[client_id]
+
+    if frontend_websocket_to_close:
+        try:
+            await frontend_websocket_to_close.close(
+                code=config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
+                reason="Server initiated disconnect via HTTP",
+            )
+            logger.info(
+                f"Closed frontend WebSocket connection for client {client_id} from server-side (HTTP request)"
+            )
+        except (WebSocketDisconnect, RuntimeError) as e:
+            logger.warning(
+                f"Client {client_id} disconnected or error closing frontend WebSocket: {e}"
+            )
+        finally:
+            del frontend_connections[client_id]
 
     # Update Redis with disconnect status
     status_update = {
@@ -724,15 +707,23 @@ async def disconnect_client(client_id: str) -> dict:
         # Broadcast the state change to all frontends
         await broadcast_client_state_change(client_id, status_update)
 
-    if client_already_disconnected and not websocket_to_close:
+    if (
+        client_already_disconnected
+        and not websocket_to_close
+        and not frontend_websocket_to_close
+    ):
         return {
             "status": "info",
             "message": f"Client {client_id} was already disconnected. Status re-broadcasted.",
             "client_id": client_id,
             "redis_status": status_store["redis"],
         }
-    if not websocket_to_close and not client_already_disconnected:
-        # This case means the client wasn't in worker_connections, but wasn't marked disconnected in Redis.
+    if (
+        not websocket_to_close
+        and not frontend_websocket_to_close
+        and not client_already_disconnected
+    ):
+        # This case means the client wasn't in worker_connections or frontend_connections, but wasn't marked disconnected in Redis.
         # We've updated Redis, so this is a form of success.
         return {
             "status": "warning",
@@ -746,9 +737,67 @@ async def disconnect_client(client_id: str) -> dict:
         "client_id": client_id,
         "redis_status": status_store["redis"],
     }
+    target_client_exists_in_redis = True
+
+    if not websocket:
+        client_info = await get_client_info(client_id)
+        if not client_info or client_info.get("connected") == "false":
+            target_client_exists_in_redis = (
+                False  # Does not exist or already disconnected
+            )
+            logger.error(
+                f"Cannot pause client {client_id}: not found or already disconnected."
+            )
+            return {
+                "status": "error",
+                "message": f"Client {client_id} not found or already disconnected.",
+            }
+        logger.warning(
+            f"Client {client_id} not actively connected via WebSocket for pause. Updating state in Redis only."
+        )
+    else:
+        try:
+            await websocket.send_text(json.dumps({"command": "pause"}))
+            logger.info(f"Pause command sent to client {client_id} via WebSocket")
+        except (WebSocketDisconnect, RuntimeError) as e:
+            logger.warning(
+                f"Client {client_id} disconnected or error sending pause command: {e}. Will proceed to update state in Redis."
+            )
+            if client_id in worker_connections:
+                del worker_connections[
+                    client_id
+                ]  # Clean up if error implies disconnect
+            # The client's own WebSocket handler or cleanup task will mark it disconnected in Redis.
+        except Exception as e:
+            logger.error(
+                f"Error sending pause command to client {client_id}: {e}", exc_info=True
+            )
+            # Remove from connections on any error
+            if client_id in worker_connections:
+                del worker_connections[client_id]
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error sending pause command to client {client_id}: {e}",
+            ) from e
+
+    status_update = {"client_state": "paused"}
+    if target_client_exists_in_redis:
+        await update_client_status(client_id, status_update)
+        # Ensure broadcast is only called once
+        await broadcast_client_state_change(client_id, status_update)
+        return {
+            "status": "success",
+            "message": f"Pause command processed for client {client_id}. State updated and broadcasted.",
+        }
+    # This 'else' corresponds to 'if not target_client_exists_in_redis', which should have been handled by the error return above.
+    # However, to be safe, we ensure a dictionary is returned.
+    return {
+        "status": "error",
+        "message": f"Pause command for client {client_id} could not be processed as client was not found in an active state.",
+    }
 
 
-async def pause_client(client_id: str) -> dict:
+async def pause_client(client_id: str, websocket: WebSocket | None = None) -> dict:
     logger.info(f"Processing pause request for client {client_id}")
     websocket = worker_connections.get(client_id)
     target_client_exists_in_redis = True
