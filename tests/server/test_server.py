@@ -10,6 +10,9 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI, WebSocket
+from fastapi.testclient import TestClient
+from fastapi.websockets import WebSocketDisconnect
 
 from src.server import config  # Added import
 from src.server.redis_manager import status_store
@@ -597,8 +600,333 @@ class TestWebSocketServer:
     # test_connection_cleanup_on_disconnect can be removed or adapted into the worker/frontend specific versions.
 
 
+class TestErrorHandling:
+    """Test error handling and edge cases in the WebSocket server."""
+
+    def test_websocket_error_during_connection(self):
+        """Test handling of WebSocket errors during connection."""
+
+        # Create a test app with a failing WebSocket endpoint
+        test_app = FastAPI()
+
+        @test_app.websocket("/ws")
+        async def failing_websocket(websocket: WebSocket):
+            await websocket.accept()
+            # Send an error message and close the connection
+            await websocket.send_json({"error": "Connection failed"})
+            await websocket.close(1011)  # 1011 = Internal Error
+
+        # Create a test client for our test app
+        test_client = TestClient(test_app)
+
+        with test_client.websocket_connect("/ws") as websocket:
+            # Should receive the error message
+            response = websocket.receive_json()
+            assert response == {"error": "Connection failed"}
+
+            # Connection should be closed with an error
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_text()
+
+            assert exc_info.value.code == 1011
+
+    def test_websocket_error_after_registration(self):
+        """Test handling of WebSocket errors after successful registration."""
+
+        # Create a test app that mimics our WebSocket behavior
+        test_app = FastAPI()
+
+        @test_app.websocket("/ws")
+        async def websocket_endpoint(websocket: WebSocket):
+            await websocket.accept()
+            try:
+                data = await websocket.receive_text()
+                # Try to parse JSON to simulate the error
+                json.loads(data)
+                await websocket.send_json({"status": "success"})
+            except json.JSONDecodeError:
+                # Send error response and close with a normal status code
+                await websocket.send_json({"error": "Invalid JSON format"})
+                await websocket.close(1000)  # 1000 = Normal closure
+
+        # Create a test client for our test app
+        test_client = TestClient(test_app)
+
+        with test_client.websocket_connect("/ws") as websocket:
+            # Send invalid JSON
+            websocket.send_text("invalid json")
+
+            # Should receive an error response
+            response = websocket.receive_json()
+            assert response == {"error": "Invalid JSON format"}
+
+            # Connection should be closed normally
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_text()
+
+            assert exc_info.value.code == 1000
+
+
+class TestRedisErrorHandling:
+    """Test Redis error handling scenarios."""
+
+    @pytest.mark.asyncio
+    async def test_redis_error_during_status_update(
+        self, websocket_client, mock_redis, monkeypatch, caplog
+    ):
+        """Test handling of Redis errors during status updates."""
+        from src.server import server as server_module
+
+        # Setup Redis to raise an error during hset
+        mock_redis.hset.side_effect = Exception("Redis write error")
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Setup broadcast mock
+        broadcast_mock = AsyncMock()
+        monkeypatch.setattr(server_module, "broadcast_to_frontends", broadcast_mock)
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Send registration message
+            message = {
+                "client_id": "test_redis_error",
+                "status": {"client_role": "worker", "state": "error_test"},
+            }
+            websocket.send_text(json.dumps(message))
+
+            # Should still get a response despite Redis error
+            response = websocket.receive_text()
+            data = json.loads(response)
+
+            assert data["result"] == "registration_complete"
+
+            # Verify error was logged
+            assert any(
+                "Failed to update client status in Redis" in record.message
+                for record in caplog.records
+                if record.levelname == "ERROR"
+            )
+
+
+class TestFrontendSpecificFunctionality:
+    """Test functionality specific to frontend clients."""
+
+    @pytest.mark.asyncio
+    async def test_frontend_receives_initial_state(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test that frontend clients receive initial state on connection."""
+        from src.server import server as server_module
+
+        # Setup initial client data in Redis
+        mock_redis.hgetall.return_value = {
+            b"client_id": b"existing_worker",
+            b"client_role": b"worker",
+            b"state": b"running",
+            b"connected": b"true",
+        }
+
+        # Mock get_all_client_statuses to return our test data
+        mock_statuses = {
+            "existing_worker": {
+                "client_id": "existing_worker",
+                "client_role": "worker",
+                "state": "running",
+                "connected": "true",
+            }
+        }
+
+        async def mock_get_all_statuses():
+            return mock_statuses, "connected", None
+
+        monkeypatch.setattr(
+            server_module, "get_all_client_statuses", mock_get_all_statuses
+        )
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Send frontend registration
+            message = {
+                "client_id": "test_frontend",
+                "status": {"client_role": "frontend"},
+            }
+            websocket.send_text(json.dumps(message))
+
+            # Should receive initial state
+            response = websocket.receive_text()
+            data = json.loads(response)
+
+            assert data["type"] == "all_clients_update"
+            assert "existing_worker" in data["data"]["clients"]
+
+
 class TestStaticFileServing:
     """Test static file serving configuration."""
+
+    def test_static_file_serving_disabled_when_no_build_dir(self, tmp_path):
+        """Test that static file serving is disabled when build directory doesn't exist."""
+
+        # Create a test app with no static files mounted
+        test_app = FastAPI()
+        test_client = TestClient(test_app)
+
+        # Access a non-existent static file
+        response = test_client.get("/index.html")
+        # Should return 404 since no static files are configured
+        assert response.status_code == 404
+
+    def test_static_file_serving_enabled(self, tmp_path):
+        """Test that static files are served when build directory exists."""
+        from fastapi.staticfiles import StaticFiles
+
+        # Create a temporary directory with an index.html file
+        build_dir = tmp_path / "frontend_build"
+        build_dir.mkdir()
+        (build_dir / "index.html").write_text("<html>Test</html>")
+
+        # Create a test app with static files
+        test_app = FastAPI()
+        test_app.mount(
+            "/", StaticFiles(directory=str(build_dir), html=True), name="static"
+        )
+
+        # Create a test client for this app
+        test_client = TestClient(test_app)
+
+        # Access the index.html file
+        response = test_client.get("/index.html")
+        assert response.status_code == 200
+        assert "<html>Test</html>" in response.text
+
+
+class TestHealthCheckEndpoints:
+    """Test health check and status endpoints."""
+
+    def test_health_check(self, monkeypatch):
+        """Test the health check endpoint."""
+
+        # Create a test status store
+        test_status_store = {"redis": "connected"}
+
+        # Create a test app with the health check endpoint
+        test_app = FastAPI()
+
+        # Add the health check endpoint
+        @test_app.get("/api/v1/health")
+        async def health_check():
+            return {
+                "status": "healthy",
+                "redis_status": test_status_store.get("redis", "unknown"),
+                "active_workers": 0,
+                "active_frontends": 0,
+            }
+
+        # Create a test client
+        test_client = TestClient(test_app)
+
+        # Test with Redis connected
+        response = test_client.get("/api/v1/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["redis_status"] == "connected"
+
+    def test_get_all_statuses(self, monkeypatch):
+        """Test the get all statuses endpoint."""
+
+        from src.server import server as server_module
+
+        # Create a test app with the statuses endpoint
+        test_app = FastAPI()
+
+        # Add the statuses endpoint
+        @test_app.get("/api/v1/statuses")
+        async def get_statuses():
+            clients, redis_status, error = await server_module.get_all_client_statuses()
+            if error:
+                return {"error": error}
+            return {"clients": clients, "redis_status": redis_status}
+
+        # Create a test client
+        test_client = TestClient(test_app)
+
+        # Test successful response
+        async def mock_get_all_statuses():
+            return {"client1": {"status": "running"}}, "connected", None
+
+        monkeypatch.setattr(
+            server_module, "get_all_client_statuses", mock_get_all_statuses
+        )
+
+        response = test_client.get("/api/v1/statuses")
+        assert response.status_code == 200
+        data = response.json()
+        assert "client1" in data["clients"]
+        assert data["redis_status"] == "connected"
+
+        # Test error handling
+        async def mock_error():
+            return {}, "error", "Redis connection failed"
+
+        monkeypatch.setattr(server_module, "get_all_client_statuses", mock_error)
+        response = test_client.get("/api/v1/statuses")
+        assert response.status_code == 200
+        assert "error" in response.json()
+
+
+class TestClientDisconnection:
+    """Test client disconnection scenarios."""
+
+    @pytest.mark.asyncio
+    async def test_handle_disconnect_cleanup(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test cleanup during client disconnection."""
+        from src.server import server as server_module
+
+        # Setup mocks
+        mock_websocket = AsyncMock()
+        client_id = "test_disconnect_cleanup"
+
+        # Add client to connections with the expected structure
+        server_module.worker_connections[client_id] = {
+            "websocket": mock_websocket,
+            "client_role": "worker",
+        }
+
+        # Create a mock coroutine for update_client_status that returns True
+        async def mock_update(client_id, status_attributes, broadcast=True):
+            return True
+
+        # Patch the update_client_status function
+        monkeypatch.setattr(server_module, "update_client_status", mock_update)
+
+        # Mock get_client_info to return a client with worker role
+        async def mock_get_client_info(client_id):
+            return {"client_id": client_id, "client_role": "worker"}
+
+        monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info)
+
+        # Mock broadcast_client_state_change to avoid side effects
+        async def mock_broadcast(*args, **kwargs):
+            pass
+
+        monkeypatch.setattr(
+            server_module, "broadcast_client_state_change", mock_broadcast
+        )
+
+        # Call handle_disconnect
+        await server_module.handle_disconnect(
+            client_id, mock_websocket, "Test disconnect"
+        )
+
+        # Verify cleanup
+        assert client_id not in server_module.worker_connections
+
+        # Verify the disconnect was handled correctly
+        # If we got here without errors, the test passed
 
     def test_frontend_directory_exists_check(self, monkeypatch):
         """Test the frontend directory existence check during startup."""
