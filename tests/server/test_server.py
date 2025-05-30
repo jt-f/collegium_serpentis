@@ -16,6 +16,10 @@ from fastapi.websockets import WebSocketDisconnect
 
 from src.server import config  # Added import
 from src.server.redis_manager import status_store
+from src.shared.utils.logging import get_logger
+
+# Add logger for the test
+logger = get_logger(__name__)
 
 
 def reset_global_server_state():
@@ -1200,3 +1204,820 @@ class TestClientManagement:
         finally:
             # Restore original state
             server_module.worker_connections = original_worker_connections
+
+
+class TestFrontendBuildDirectoryChecks:
+    """Test frontend build directory configuration checks."""
+
+    def test_frontend_build_dir_not_exists_warning(self, caplog, monkeypatch):
+        """Test warning when frontend build directory doesn't exist."""
+
+        # Mock os.path.exists to return False for the build directory
+        with patch("os.path.exists", return_value=False):
+            # Reload the server module to trigger the directory check
+            import importlib
+
+            from src.server import server
+
+            importlib.reload(server)
+
+            # Check that warning was logged
+            assert any(
+                "Frontend build directory not found" in record.message
+                for record in caplog.records
+                if record.levelname == "WARNING"
+            )
+
+    def test_frontend_build_dir_exists_but_no_index_html_warning(
+        self, caplog, monkeypatch
+    ):
+        """Test warning when build directory exists but index.html is missing."""
+
+        # Mock os.path.exists to return True for build dir, False for index.html
+        def mock_exists(path):
+            if "frontend_build" in path:
+                return True
+            if "index.html" in path:
+                return False
+            return True
+
+        with patch("os.path.exists", side_effect=mock_exists):
+            # Reload the server module to trigger the check
+            import importlib
+
+            from src.server import server
+
+            importlib.reload(server)
+
+            # Check that warning was logged
+            assert any(
+                "index.html not found in frontend build directory" in record.message
+                for record in caplog.records
+                if record.levelname == "WARNING"
+            )
+
+
+class TestWebSocketEndpointErrorHandling:
+    """Test error handling in the WebSocket endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_websocket_json_decode_error_in_message_loop(
+        self, websocket_client, mock_redis, monkeypatch, caplog
+    ):
+        """Test JSON decode error in message loop after successful registration."""
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock the status after registration
+        expected_status = {
+            "client_id": "test_json_error_client",
+            "client_role": "worker",
+            "state": "running",
+            "connected": "true",
+        }
+        mock_redis.hgetall.return_value = {
+            k.encode(): v.encode() for k, v in expected_status.items()
+        }
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register first
+            registration_message = {
+                "client_id": "test_json_error_client",
+                "status": {"client_role": "worker", "state": "running"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+            websocket.receive_text()  # Consume registration complete
+
+            # Send invalid JSON
+            websocket.send_text("invalid json}")
+
+            # Should get an error response
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["error"] == "Invalid JSON format"
+
+            # Check that error was logged
+            assert any(
+                "Invalid JSON from test_json_error_client" in record.message
+                for record in caplog.records
+                if record.levelname == "ERROR"
+            )
+
+    @pytest.mark.asyncio
+    async def test_websocket_unexpected_exception_handling(
+        self, websocket_client, mock_redis, monkeypatch, caplog
+    ):
+        """Test handling of unexpected exceptions in websocket endpoint."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock update_client_status to raise an exception
+        async def mock_update_status(*args, **kwargs):
+            raise RuntimeError("Unexpected error during status update")
+
+        monkeypatch.setattr(server_module, "update_client_status", mock_update_status)
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register first
+            registration_message = {
+                "client_id": "test_exception_client",
+                "status": {"client_role": "worker", "state": "running"},
+            }
+
+            # This should trigger the exception in update_client_status
+            websocket.send_text(json.dumps(registration_message))
+
+            # The connection should be closed due to the exception
+            try:
+                websocket.receive_text()
+            except Exception:
+                pass  # Expected to fail
+
+            # Check that error was logged
+            assert any(
+                "Unexpected WebSocket error for client" in record.message
+                for record in caplog.records
+                if record.levelname == "ERROR"
+            )
+
+    @pytest.mark.asyncio
+    async def test_websocket_close_during_error_handling(
+        self, websocket_client, mock_redis, monkeypatch, caplog
+    ):
+        """Test error during websocket close in exception handler."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Create a mock that will cause an exception during message processing
+        async def mock_update_status(*args, **kwargs):
+            raise RuntimeError("Simulated processing error")
+
+        monkeypatch.setattr(server_module, "update_client_status", mock_update_status)
+
+        # We'll test the error handling by causing an exception during registration
+        # which will trigger the exception handler in the websocket_endpoint
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            try:
+                # Send registration message that will cause an exception
+                registration_message = {
+                    "client_id": "test_error_client",
+                    "status": {"client_role": "worker", "state": "running"},
+                }
+                websocket.send_text(json.dumps(registration_message))
+
+                # Try to receive response - this may fail due to the exception
+                try:
+                    websocket.receive_text()
+                except Exception:
+                    pass  # Expected to fail due to our simulated error
+
+            except Exception:
+                pass  # Expected due to simulated error
+
+        # Check that error was logged about the unexpected WebSocket error
+        assert any(
+            "Unexpected WebSocket error for client" in record.message
+            for record in caplog.records
+            if record.levelname == "ERROR"
+        ), f"Expected error log not found. Available logs: {[r.message for r in caplog.records if r.levelname == 'ERROR']}"
+
+
+class TestControlMessageHandling:
+    """Test control message handling from frontend clients."""
+
+    @pytest.mark.asyncio
+    async def test_control_message_from_non_frontend_client(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test that non-frontend clients cannot send control messages."""
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock the status after registration
+        expected_status = {
+            "client_id": "worker_client",
+            "client_role": "worker",
+            "state": "running",
+            "connected": "true",
+        }
+        mock_redis.hgetall.return_value = {
+            k.encode(): v.encode() for k, v in expected_status.items()
+        }
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register as worker
+            registration_message = {
+                "client_id": "worker_client",
+                "status": {"client_role": "worker", "state": "running"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+            websocket.receive_text()  # Consume registration complete
+
+            # Try to send control message
+            control_message = {
+                "type": "control",
+                "action": "pause",
+                "target_client_id": "some_target",
+                "message_id": "test_123",
+            }
+            websocket.send_text(json.dumps(control_message))
+
+            # Should get permission denied response
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["type"] == "control_response"
+            assert data["status"] == "error"
+            assert "Permission denied" in data["message"]
+            assert data["action"] == "pause"
+            assert data["target_client_id"] == "some_target"
+            assert data["message_id"] == "test_123"
+
+    @pytest.mark.asyncio
+    async def test_control_message_missing_required_fields(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test control message with missing required fields."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock get_all_client_statuses for frontend registration
+        async def mock_get_all_statuses():
+            return {}, "connected", None
+
+        monkeypatch.setattr(
+            server_module, "get_all_client_statuses", mock_get_all_statuses
+        )
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register as frontend
+            registration_message = {
+                "client_id": "frontend_client",
+                "status": {"client_role": "frontend"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+
+            # Consume all registration messages
+            websocket.receive_text()  # all_clients_update
+            websocket.receive_text()  # broadcast of own status
+            websocket.receive_text()  # registration_complete
+
+            # Send control message missing action
+            control_message = {
+                "type": "control",
+                "target_client_id": "some_target",
+                "message_id": "test_123",
+            }
+            websocket.send_text(json.dumps(control_message))
+
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["type"] == "control_response"
+            assert data["status"] == "error"
+            assert "'action' and 'target_client_id' are required" in data["message"]
+
+            # Send control message missing target_client_id
+            control_message = {
+                "type": "control",
+                "action": "pause",
+                "message_id": "test_456",
+            }
+            websocket.send_text(json.dumps(control_message))
+
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["type"] == "control_response"
+            assert data["status"] == "error"
+            assert "'action' and 'target_client_id' are required" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_control_message_unknown_action(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test control message with unknown action."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock get_all_client_statuses for frontend registration
+        async def mock_get_all_statuses():
+            return {}, "connected", None
+
+        monkeypatch.setattr(
+            server_module, "get_all_client_statuses", mock_get_all_statuses
+        )
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register as frontend
+            registration_message = {
+                "client_id": "frontend_client",
+                "status": {"client_role": "frontend"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+
+            # Consume all registration messages
+            websocket.receive_text()  # all_clients_update
+            websocket.receive_text()  # broadcast of own status
+            websocket.receive_text()  # registration_complete
+
+            # Send control message with unknown action
+            control_message = {
+                "type": "control",
+                "action": "unknown_action",
+                "target_client_id": "some_target",
+                "message_id": "test_123",
+            }
+            websocket.send_text(json.dumps(control_message))
+
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["type"] == "control_response"
+            assert data["status"] == "error"
+            assert "Unknown control action: unknown_action" in data["message"]
+            assert data["action"] == "unknown_action"
+
+
+class TestWorkerStatusUpdateHandling:
+    """Test worker status update message handling."""
+
+    @pytest.mark.asyncio
+    async def test_worker_status_update_conflicting_client_id(
+        self, websocket_client, mock_redis, monkeypatch, caplog
+    ):
+        """Test worker sending status update with conflicting client_id."""
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock the status after registration and update
+        expected_status = {
+            "client_id": "worker_client",
+            "client_role": "worker",
+            "state": "running",
+            "connected": "true",
+        }
+        mock_redis.hgetall.return_value = {
+            k.encode(): v.encode() for k, v in expected_status.items()
+        }
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register as worker
+            registration_message = {
+                "client_id": "worker_client",
+                "status": {"client_role": "worker", "state": "running"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+            websocket.receive_text()  # Consume registration complete
+
+            # Send status update with conflicting client_id
+            status_update = {
+                "client_id": "different_client_id",  # Conflicts with registered ID
+                "status": {"temp": "35C", "load": "high"},
+            }
+            websocket.send_text(json.dumps(status_update))
+
+            # Should still get acknowledgment
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["result"] == "message_processed"
+            assert data["client_id"] == "worker_client"  # Uses connection's client_id
+
+            # Check warning was logged
+            assert any(
+                "sent status with conflicting client_id" in record.message
+                for record in caplog.records
+                if record.levelname == "WARNING"
+            )
+
+    @pytest.mark.asyncio
+    async def test_worker_status_update_non_dict_status(
+        self, websocket_client, mock_redis, monkeypatch, caplog
+    ):
+        """Test worker sending non-dict status payload."""
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock the status after registration and update
+        expected_status = {
+            "client_id": "worker_client",
+            "client_role": "worker",
+            "state": "running",
+            "connected": "true",
+            "raw_payload": "string_status",
+        }
+        mock_redis.hgetall.return_value = {
+            k.encode(): v.encode() for k, v in expected_status.items()
+        }
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register as worker
+            registration_message = {
+                "client_id": "worker_client",
+                "status": {"client_role": "worker", "state": "running"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+            websocket.receive_text()  # Consume registration complete
+
+            # Send status update with non-dict status
+            status_update = {
+                "client_id": "worker_client",
+                "status": "string_status",  # Not a dict
+            }
+            websocket.send_text(json.dumps(status_update))
+
+            # Should still get acknowledgment
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["result"] == "message_processed"
+            assert "raw_payload" in data["status_updated"]
+
+            # Check warning was logged
+            assert any(
+                "Received non-dict status from worker" in record.message
+                for record in caplog.records
+                if record.levelname == "WARNING"
+            )
+
+
+class TestFrontendMessageHandling:
+    """Test frontend message handling."""
+
+    @pytest.mark.asyncio
+    async def test_frontend_unhandled_message_type(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test frontend sending unhandled message type."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock get_all_client_statuses for frontend registration
+        async def mock_get_all_statuses():
+            return {}, "connected", None
+
+        monkeypatch.setattr(
+            server_module, "get_all_client_statuses", mock_get_all_statuses
+        )
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            # Register as frontend
+            registration_message = {
+                "client_id": "frontend_client",
+                "status": {"client_role": "frontend"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+
+            # Consume all registration messages
+            websocket.receive_text()  # all_clients_update
+            websocket.receive_text()  # broadcast of own status
+            websocket.receive_text()  # registration_complete
+
+            # Send unhandled message type
+            unhandled_message = {"type": "unknown_type", "data": "some_data"}
+            websocket.send_text(json.dumps(unhandled_message))
+
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["type"] == "message_receipt_unknown"
+            assert data["original_message"] == unhandled_message
+            assert "Message type not recognized" in data["info"]
+
+
+class TestStatusEndpointErrorHandling:
+    """Test error handling in REST API endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_all_statuses_exception_handling(self, monkeypatch, caplog):
+        """Test exception handling in get_all_statuses endpoint."""
+        from src.server import server as server_module
+
+        # Mock get_all_client_statuses to raise an exception
+        async def mock_get_all_statuses():
+            raise RuntimeError("Database error")
+
+        monkeypatch.setattr(
+            server_module, "get_all_client_statuses", mock_get_all_statuses
+        )
+
+        # Call the endpoint function directly
+        response = await server_module.get_all_statuses()
+
+        assert response["clients"] == {}
+        assert response["redis_status"] == "unknown"
+        assert response["error"] == "Failed to retrieve client statuses"
+
+        # Check error was logged
+        assert any(
+            f"Error in GET {config.STATUSES_ENDPOINT_PATH}" in record.message
+            for record in caplog.records
+            if record.levelname == "ERROR"
+        )
+
+
+class TestHelperFunctionErrorHandling:
+    """Test error handling in helper functions."""
+
+    @pytest.mark.asyncio
+    async def test_get_client_info_redis_unavailable(self, monkeypatch, caplog):
+        """Test get_client_info when Redis is unavailable."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "unavailable")
+
+        result = await server_module.get_client_info("test_client")
+        assert result is None
+
+        # Check warning was logged
+        assert any(
+            "Redis unavailable, cannot get client info for test_client"
+            in record.message
+            for record in caplog.records
+            if record.levelname == "WARNING"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_client_info_redis_exception(
+        self, mock_redis, monkeypatch, caplog
+    ):
+        """Test get_client_info when Redis raises an exception."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+        mock_redis.hgetall.side_effect = Exception("Redis connection lost")
+
+        result = await server_module.get_client_info("test_client")
+        assert result is None
+
+        # Check error was logged
+        assert any(
+            "Error getting client info for test_client" in record.message
+            for record in caplog.records
+            if record.levelname == "ERROR"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_client_info_empty_status_data(self, mock_redis, monkeypatch):
+        """Test get_client_info when Redis returns empty data."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+        mock_redis.hgetall.return_value = {}  # Empty dict
+
+        result = await server_module.get_client_info("test_client")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_broadcast_client_state_change_empty_client_id(self, caplog):
+        """Test broadcast_client_state_change with empty client_id."""
+        from src.server import server as server_module
+
+        await server_module.broadcast_client_state_change("")
+
+        # Check warning was logged
+        assert any(
+            "broadcast_client_state_change called with empty client_id"
+            in record.message
+            for record in caplog.records
+            if record.levelname == "WARNING"
+        )
+
+    @pytest.mark.asyncio
+    async def test_broadcast_client_state_change_no_status_found(
+        self, monkeypatch, caplog
+    ):
+        """Test broadcast_client_state_change when no status is found."""
+        from src.server import server as server_module
+
+        # Mock get_client_info to return None
+        async def mock_get_client_info(client_id):
+            return None
+
+        monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info)
+
+        await server_module.broadcast_client_state_change("test_client")
+
+        # Check warning was logged
+        assert any(
+            "No status found for client test_client in broadcast_client_state_change"
+            in record.message
+            for record in caplog.records
+            if record.levelname == "WARNING"
+        )
+
+    @pytest.mark.asyncio
+    async def test_broadcast_client_state_change_exception(self, monkeypatch, caplog):
+        """Test broadcast_client_state_change exception handling."""
+        from src.server import server as server_module
+
+        # Mock get_client_info to raise an exception
+        async def mock_get_client_info(client_id):
+            raise RuntimeError("Test error")
+
+        monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info)
+
+        await server_module.broadcast_client_state_change("test_client")
+
+        # Check error was logged
+        assert any(
+            "Error broadcasting state change for client test_client" in record.message
+            for record in caplog.records
+            if record.levelname == "ERROR"
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_client_status_exception_handling(
+        self, mock_redis, monkeypatch, caplog
+    ):
+        """Test update_client_status exception handling."""
+        from src.server import server as server_module
+
+        # Mock redis_update_client_status to raise an exception
+        async def mock_redis_update(client_id, status_attrs):
+            raise RuntimeError("Redis error")
+
+        monkeypatch.setattr(
+            server_module, "redis_update_client_status", mock_redis_update
+        )
+
+        result = await server_module.update_client_status(
+            "test_client", {"state": "running"}
+        )
+        assert result is False
+
+        # Check error was logged
+        assert any(
+            "Error updating status for client test_client in Redis" in record.message
+            for record in caplog.records
+            if record.levelname == "ERROR"
+        )
+
+
+class TestLifespanErrorHandling:
+    """Test lifespan management error handling."""
+
+    @pytest.mark.asyncio
+    async def test_lifespan_close_websocket_errors(self, monkeypatch, caplog):
+        """Test lifespan handling when WebSocket close fails."""
+        from src.server import server as server_module
+
+        # Save original connections
+        original_worker_connections = server_module.worker_connections.copy()
+        original_frontend_connections = server_module.frontend_connections.copy()
+
+        try:
+            # Create mock WebSockets that raise errors during close
+            error_ws1 = AsyncMock()
+            error_ws1.close = AsyncMock(side_effect=RuntimeError("Close error 1"))
+            error_ws2 = AsyncMock()
+            error_ws2.close = AsyncMock(side_effect=RuntimeError("Close error 2"))
+
+            # Add to connections
+            server_module.worker_connections = {"worker1": error_ws1}
+            server_module.frontend_connections = {"frontend1": error_ws2}
+
+            # Mock close_redis
+            close_redis_mock = AsyncMock()
+            monkeypatch.setattr(server_module, "close_redis", close_redis_mock)
+
+            # Test the lifespan shutdown
+            async with server_module.lifespan(None):
+                pass  # This will trigger the shutdown in finally block
+
+            # Verify errors were logged
+            assert any(
+                "Error closing a WebSocket connection during shutdown" in record.message
+                for record in caplog.records
+                if record.levelname == "WARNING"
+            )
+
+        finally:
+            # Restore original state
+            server_module.worker_connections = original_worker_connections
+            server_module.frontend_connections = original_frontend_connections
+
+
+class TestWebSocketClosureScenarios:
+    """Test WebSocket connection closure scenarios."""
+
+    @pytest.mark.asyncio
+    async def test_websocket_connection_closed_before_registration(
+        self, websocket_client, caplog
+    ):
+        """Test connection closed before client_id is established."""
+        # This test simulates the scenario where a WebSocket connects but
+        # disconnects before completing registration
+
+        # The test framework makes it difficult to simulate this exact scenario,
+        # but we can verify the logging behavior when client_id is None
+        from src.server import server as server_module
+
+        # Call handle_disconnect with None client_id to simulate this scenario
+        mock_websocket = AsyncMock()
+        await server_module.handle_disconnect(
+            None, mock_websocket, "Connection dropped"
+        )
+
+        # This should not crash and should be handled gracefully
+        # The function should exit early when client_id is None
+
+
+class TestRegistrationEdgeCases:
+    """Test edge cases in client registration."""
+
+    @pytest.mark.asyncio
+    async def test_registration_redis_update_fails_but_broadcast_succeeds(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test registration when Redis update fails but status is still available."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock update_client_status to return False (Redis failure)
+        # but get_client_info to return status (somehow available)
+        async def mock_update_status(*args, **kwargs):
+            return False
+
+        async def mock_get_client_info(client_id):
+            return {
+                "client_id": client_id,
+                "client_role": "worker",
+                "state": "running",
+                "connected": "true",
+            }
+
+        monkeypatch.setattr(server_module, "update_client_status", mock_update_status)
+        monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info)
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            registration_message = {
+                "client_id": "test_redis_fail_client",
+                "status": {"client_role": "worker", "state": "running"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+
+            # Should still get registration complete
+            response = websocket.receive_text()
+            data = json.loads(response)
+            assert data["result"] == "registration_complete"
+
+    @pytest.mark.asyncio
+    async def test_frontend_registration_get_all_clients_returns_none(
+        self, websocket_client, mock_redis, monkeypatch
+    ):
+        """Test frontend registration when get_all_client_statuses returns None."""
+        from src.server import server as server_module
+
+        monkeypatch.setitem(status_store, "redis", "connected")
+
+        # Mock get_all_client_statuses to return None for clients
+        async def mock_get_all_statuses():
+            return None, "connected", None
+
+        monkeypatch.setattr(
+            server_module, "get_all_client_statuses", mock_get_all_statuses
+        )
+
+        with websocket_client.websocket_connect(
+            config.WEBSOCKET_ENDPOINT_PATH
+        ) as websocket:
+            registration_message = {
+                "client_id": "frontend_client",
+                "status": {"client_role": "frontend"},
+            }
+            websocket.send_text(json.dumps(registration_message))
+
+            # Should skip the all_clients_update message since data is None
+            # Should get broadcast of own status and registration complete
+            response1 = websocket.receive_text()
+            data1 = json.loads(response1)
+            # Could be either broadcast or registration_complete depending on timing
+
+            response2 = websocket.receive_text()
+            data2 = json.loads(response2)
+
+            # One should be registration_complete
+            assert any(
+                data.get("result") == "registration_complete" for data in [data1, data2]
+            )

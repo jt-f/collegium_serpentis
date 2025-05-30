@@ -314,7 +314,8 @@ async def close_redis() -> None:
     """Close Redis connection."""
     try:
         await redis_client.close()
-        logger.info("Redis connection closed")
+        await redis_client.wait_closed()
+        logger.info("Redis connection closed and waited")
     except Exception as e:
         logger.warning("Error while closing Redis connection", error=str(e))
 

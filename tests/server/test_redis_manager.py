@@ -3,15 +3,18 @@
 import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 import redis
 
 # Import status_store and perform_cleanup_cycle directly as client_cache is removed
 from src.server.redis_manager import (
+    close_redis,
+    get_all_client_statuses,
     perform_cleanup_cycle,
     redis_health_check,
+    redis_reconnector,
     status_store,
 )
 from tests.server.conftest import AsyncIteratorWrapper
@@ -77,6 +80,125 @@ class TestRedisHealthCheck:
 
         mock_redis.ping.assert_not_awaited()  # Should not attempt to ping
         assert status_store["redis"] == "unavailable"
+
+
+async def perform_reconnector_cycle(mock_redis_client, initial_status="unavailable"):
+    """Helper to run the reconnector logic once for testing."""
+    status_store["redis"] = initial_status
+    # Patch the global redis_client and status_store for the duration of this call
+    # Mock random for predictable backoff
+    with patch("src.server.redis_manager.redis_client", mock_redis_client), patch(
+        "src.server.redis_manager.status_store", status_store
+    ), patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep, patch(
+        "random.random", MagicMock(return_value=0.5)
+    ):
+        mock_sleep.side_effect = [
+            None,
+            None,
+            asyncio.CancelledError,
+        ]  # Allow pre-loop and pre-ping sleeps, then stop
+        try:
+            await redis_reconnector()
+        except asyncio.CancelledError:
+            pass  # Expected
+    return mock_sleep
+
+
+@pytest.mark.asyncio
+class TestRedisReconnector:
+    """Test the redis_reconnector function."""
+
+    async def test_redis_reconnector_successful_reconnect(
+        self, mock_redis, monkeypatch
+    ):
+        """Test that redis_reconnector updates status to 'connected' on successful ping."""
+        mock_redis.ping.return_value = AsyncMock()  # Successful ping
+        monkeypatch.setitem(status_store, "redis", "unavailable")
+
+        mock_sleep = await perform_reconnector_cycle(
+            mock_redis, initial_status="unavailable"
+        )
+
+        assert status_store["redis"] == "connected"
+        mock_redis.ping.assert_awaited_once()  # Should ping once successfully
+        assert (
+            mock_sleep.call_count == 3
+        )  # Initial sleep(5), in-loop sleep(5) before successful ping, then one more sleep
+        assert mock_sleep.call_args_list[0] == call(5.0)
+        assert mock_sleep.call_args_list[1] == call(5.0)
+        assert mock_sleep.call_args_list[2] == call(
+            5.0
+        )  # After successful ping, we continue with base_delay
+
+    async def test_redis_reconnector_keeps_retrying_on_connection_error(
+        self, mock_redis, monkeypatch
+    ):
+        """Test that redis_reconnector stays 'unavailable' and schedules retry on ConnectionError."""
+        mock_redis.ping.side_effect = redis.ConnectionError(
+            "Simulated connection error"
+        )
+        monkeypatch.setitem(status_store, "redis", "unavailable")
+
+        mock_sleep = await perform_reconnector_cycle(
+            mock_redis, initial_status="unavailable"
+        )
+
+        assert status_store["redis"] == "unavailable"
+        assert (
+            mock_redis.ping.await_count == 2
+        )  # ping is called twice with this test helper
+        assert mock_sleep.call_count == 3
+        assert mock_sleep.call_args_list[0] == call(5.0)  # Iteration 1 sleep
+        assert mock_sleep.call_args_list[1] == call(
+            10.0
+        )  # Iteration 2 sleep (after 1st backoff)
+        assert mock_sleep.call_args_list[2] == call(
+            20.0
+        )  # Iteration 3 sleep (after 2nd backoff, then cancelled)
+
+    async def test_redis_reconnector_handles_general_exception(
+        self, mock_redis, monkeypatch
+    ):
+        """Test that redis_reconnector stays 'unavailable' on general exception."""
+        mock_redis.ping.side_effect = Exception("Simulated general error")
+        monkeypatch.setitem(status_store, "redis", "unavailable")
+
+        mock_sleep = await perform_reconnector_cycle(
+            mock_redis, initial_status="unavailable"
+        )
+
+        assert status_store["redis"] == "unavailable"
+        assert (
+            mock_redis.ping.await_count == 2
+        )  # ping is called twice with this test helper
+        assert mock_sleep.call_count == 3
+        assert mock_sleep.call_args_list[0] == call(5)  # Iteration 1 sleep
+        assert mock_sleep.call_args_list[1] == call(
+            10
+        )  # Iteration 2 sleep (after 1st backoff)
+        assert mock_sleep.call_args_list[2] == call(
+            20
+        )  # Iteration 3 sleep (after 2nd backoff, then cancelled)
+
+    async def test_redis_reconnector_does_nothing_if_connected(
+        self, mock_redis, monkeypatch
+    ):
+        """Test reconnector does not try to ping if status is already connected."""
+        monkeypatch.setitem(status_store, "redis", "connected")
+        mock_redis.ping = AsyncMock()  # Should not be called
+
+        mock_sleep = await perform_reconnector_cycle(
+            mock_redis, initial_status="connected"
+        )
+
+        assert status_store["redis"] == "connected"
+        mock_redis.ping.assert_not_awaited()
+        assert (
+            mock_sleep.call_count == 3
+        )  # Initial sleep, then two in-loop sleeps (all base_delay) before cancellation
+        assert mock_sleep.call_args_list[0] == call(5)
+        assert mock_sleep.call_args_list[1] == call(5)
+        assert mock_sleep.call_args_list[2] == call(5)
 
 
 # Helper function to allow testing redis_health_check's internal logic without infinite loop
@@ -235,6 +357,45 @@ class TestCleanupTask:
         mock_redis.hgetall.assert_not_called()
         mock_redis.delete.assert_not_called()
 
+    async def test_cleanup_handles_invalid_disconnect_time_format(
+        self, mock_redis: AsyncMock, monkeypatch, caplog
+    ):
+        """Test cleanup logs warning and skips client with invalid disconnect_time format."""
+        monkeypatch.setitem(status_store, "redis", "connected")
+        invalid_client_id = "client-invalid-time"
+
+        mock_redis.scan_iter.return_value = AsyncIteratorWrapper(
+            [f"client:{invalid_client_id}:status".encode()]
+        )
+        mock_redis.hgetall.return_value = {
+            b"connected": b"false",
+            b"disconnect_time": b"not-a-valid-iso-timestamp",
+        }
+        mock_redis.delete = AsyncMock()
+
+        with caplog.at_level("WARNING"):
+            await perform_cleanup_cycle()
+
+        mock_redis.delete.assert_not_awaited()  # Should not attempt to delete
+        assert (
+            f"Invalid disconnect_time format for client {invalid_client_id}"
+            in caplog.text
+        )
+
+    async def test_cleanup_handles_general_exception(
+        self, mock_redis: AsyncMock, monkeypatch, caplog
+    ):
+        """Test cleanup handles a general exception during processing."""
+        monkeypatch.setitem(status_store, "redis", "connected")
+        mock_redis.scan_iter.side_effect = Exception("Simulated general error")
+
+        with caplog.at_level("ERROR"):
+            await perform_cleanup_cycle()
+
+        assert "Unexpected error during Redis client cleanup" in caplog.text
+        # status_store should not be set to unavailable for general exceptions in cleanup
+        assert status_store["redis"] == "connected"
+
 
 @pytest.mark.asyncio
 class TestUpdateClientStatus:
@@ -354,3 +515,131 @@ def mock_redis() -> Iterator[AsyncMock]:
         mock.delete = AsyncMock()
         mock.ping = AsyncMock(return_value=True)
         yield mock
+
+
+@pytest.mark.asyncio
+class TestGetAllClientStatuses:
+    """Test the get_all_client_statuses function."""
+
+    async def test_get_all_client_statuses_success(self, mock_redis, monkeypatch):
+        """Test successful retrieval of all client statuses."""
+        monkeypatch.setitem(status_store, "redis", "connected")
+        client1_key = b"client:client1:status"
+        client2_key = b"client:client2:status"
+        client1_data = {b"attr1": b"val1", b"connected": b"true"}
+        client2_data = {b"attr2": b"val2", b"connected": b"false"}
+
+        mock_redis.scan_iter.return_value = AsyncIteratorWrapper(
+            [client1_key, client2_key]
+        )
+        mock_redis.hgetall.side_effect = [client1_data, client2_data]
+
+        result = await get_all_client_statuses()
+
+        statuses, data_source, error_msg = result
+        assert len(statuses) == 2
+        assert statuses["client1"] == {"attr1": "val1", "connected": "true"}
+        assert statuses["client2"] == {"attr2": "val2", "connected": "false"}
+        assert data_source == "redis"
+        assert error_msg is None
+        mock_redis.scan_iter.assert_called_once_with(
+            "client:*:status"
+        )  # Changed to assert_called_once_with
+        assert mock_redis.hgetall.call_count == 2  # Changed to call_count
+
+    async def test_get_all_client_statuses_redis_unavailable(
+        self, mock_redis, monkeypatch
+    ):
+        """Test behavior when Redis is unavailable."""
+        monkeypatch.setitem(status_store, "redis", "unavailable")
+
+        result = await get_all_client_statuses()
+
+        statuses, data_source, error_msg = result
+        assert statuses == {}
+        assert data_source == "error"
+        assert error_msg == "Redis is unavailable."
+        mock_redis.scan_iter.assert_not_called()  # Changed to assert_not_called
+
+    async def test_get_all_client_statuses_redis_error_on_scan(
+        self, mock_redis, monkeypatch, caplog
+    ):
+        """Test behavior when scan_iter raises a RedisError."""
+        monkeypatch.setitem(status_store, "redis", "connected")
+        mock_redis.scan_iter.side_effect = redis.RedisError("Scan failed")
+
+        with caplog.at_level("ERROR"):
+            result = await get_all_client_statuses()
+
+        statuses, data_source, error_msg = result
+        assert statuses == {}
+        assert data_source == "error"
+        assert error_msg == "Scan failed"
+        assert status_store["redis"] == "unavailable"
+        assert "Failed to fetch client statuses from Redis (RedisError)" in caplog.text
+        assert "error='Scan failed'" in caplog.text
+
+    async def test_get_all_client_statuses_redis_error_on_hgetall(
+        self, mock_redis, monkeypatch, caplog
+    ):
+        """Test behavior when hgetall raises a RedisError for one client."""
+        monkeypatch.setitem(status_store, "redis", "connected")
+        client1_key = b"client:client1:status"
+        client2_key = b"client:client2:status"  # This one will fail
+        client1_data = {b"attr1": b"val1"}
+
+        mock_redis.scan_iter.return_value = AsyncIteratorWrapper(
+            [client1_key, client2_key]
+        )
+        mock_redis.hgetall.side_effect = [
+            client1_data,
+            redis.RedisError("HGETALL failed"),
+        ]
+
+        with caplog.at_level("ERROR"):
+            result = await get_all_client_statuses()
+
+        statuses, data_source, error_msg = result
+        # Should still return data for successful calls before the error
+        assert len(statuses) == 1
+        assert statuses["client1"] == {"attr1": "val1"}
+        assert data_source == "error"
+        assert error_msg == "HGETALL failed"
+        assert status_store["redis"] == "unavailable"
+        assert "Failed to fetch client statuses from Redis (RedisError)" in caplog.text
+        assert (
+            "error='HGETALL failed'" in caplog.text
+        )  # The error message for hgetall is also generic in the logger
+
+    async def test_get_all_client_statuses_no_clients(self, mock_redis, monkeypatch):
+        """Test behavior when no client keys are found in Redis."""
+        monkeypatch.setitem(status_store, "redis", "connected")
+        mock_redis.scan_iter.return_value = AsyncIteratorWrapper([])  # No keys
+
+        result = await get_all_client_statuses()
+
+        statuses, data_source, error_msg = result
+        assert statuses == {}
+        assert data_source == "redis"  # No error, just no clients
+        assert error_msg is None
+        mock_redis.scan_iter.assert_called_once_with(
+            "client:*:status"
+        )  # Changed to assert_called_once_with
+        mock_redis.hgetall.assert_not_called()  # Changed to assert_not_called
+
+
+@pytest.mark.asyncio
+class TestCloseRedis:
+    """Test the close_redis function."""
+
+    async def test_close_redis_calls_client_methods(self, mock_redis, monkeypatch):
+        """Test that close_redis calls close and wait_closed on the redis_client."""
+        monkeypatch.setattr("src.server.redis_manager.redis_client", mock_redis)
+
+        mock_redis.close = AsyncMock()
+        mock_redis.wait_closed = AsyncMock()
+
+        await close_redis()
+
+        mock_redis.close.assert_awaited_once()
+        mock_redis.wait_closed.assert_awaited_once()

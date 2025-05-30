@@ -1,9 +1,8 @@
 import asyncio
 import json
+import logging
 import os
 import random
-
-# import string # No longer needed for random name generation
 import uuid
 from datetime import UTC, datetime
 
@@ -11,6 +10,11 @@ import websockets
 from faker import Faker  # Added for realistic name generation
 from websockets import ConnectionClosed, InvalidURI
 from websockets.protocol import State as WebSocketState  # Corrected import
+
+# Configure logging early
+logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 # Use environment variable with fallback for flexibility
 SERVER_URL = os.getenv("SERVER_URL", "ws://localhost:8000/ws")
@@ -66,7 +70,7 @@ async def send_registration_message(websocket):
         },
     }
     await websocket.send(json.dumps(registration_payload))
-    print(f"Sent registration message: {registration_payload}")
+    logger.info(f"Sent registration message: {registration_payload}")
 
 
 async def send_status_message(websocket, status_attributes: dict):
@@ -76,7 +80,7 @@ async def send_status_message(websocket, status_attributes: dict):
         return
     message = {"client_id": CLIENT_ID, "status": status_attributes}
     await websocket.send(json.dumps(message))
-    print(f"Sent message: {message}")
+    logger.info(f"Sent message: {message}")
 
 
 async def send_full_status_update(websocket):
@@ -119,13 +123,13 @@ async def listen_for_commands(websocket):
                         )
                     continue
 
-                print(f"Client {CLIENT_ID}: Received command: {command}")
+                logger.info(f"Client {CLIENT_ID}: Received command: {command}")
 
                 if command == "pause":
                     if not is_paused:
                         is_paused = True
-                        print(
-                            f"Client {CLIENT_ID}: Paused command received. "
+                        logger.info(
+                            f"Client {CLIENT_ID}: Pause command received. "
                             f"Halting status updates."
                         )
                         ack_status = {
@@ -134,14 +138,14 @@ async def listen_for_commands(websocket):
                         }
                         await send_status_message(websocket, ack_status)
                     else:
-                        print(
+                        logger.info(
                             f"Client {CLIENT_ID}: Already paused. "
                             f"Pause command ignored."
                         )
                 elif command == "resume":
                     if is_paused:
                         is_paused = False
-                        print(
+                        logger.info(
                             f"Client {CLIENT_ID}: Resume command received. "
                             f"Resuming status updates."
                         )
@@ -153,12 +157,12 @@ async def listen_for_commands(websocket):
                         }
                         await send_status_message(websocket, ack_status)
                     else:
-                        print(
+                        logger.info(
                             f"Client {CLIENT_ID}: Already running. "
                             f"Resume command ignored."
                         )
                 elif command == "disconnect":
-                    print(
+                    logger.info(
                         f"Client {CLIENT_ID}: Disconnect command received. Initiating shutdown."
                     )
                     manual_disconnect_initiated = True
@@ -172,38 +176,40 @@ async def listen_for_commands(websocket):
                     # We will close the websocket from connect_and_send_updates after tasks complete.
                     return  # Exit this task, gather will then complete.
                 else:
-                    print(
-                        f"Client {CLIENT_ID}: " f"Unknown command received: {command}"
+                    logger.warning(
+                        f"Client {CLIENT_ID}: Unknown command received: {command}"
                     )
 
             except json.JSONDecodeError:
-                print(f"Client {CLIENT_ID}: Received invalid JSON: {message_json}")
+                logger.warning(
+                    f"Client {CLIENT_ID}: Received invalid JSON: {message_json}"
+                )
             except Exception as e:
                 if (
                     not manual_disconnect_initiated
                 ):  # Don't log errors if we are trying to shut down
-                    print(f"Client {CLIENT_ID}: Error processing command: {e}")
+                    logger.error(f"Client {CLIENT_ID}: Error processing command: {e}")
                 else:
-                    print(f"Client {CLIENT_ID}: Error during shutdown: {e}")
+                    logger.error(f"Client {CLIENT_ID}: Error during shutdown: {e}")
                 # If a critical error occurs, might also want to set manual_disconnect_initiated = True
 
     except ConnectionClosed as e:
         if manual_disconnect_initiated:
-            print(
+            logger.info(
                 f"Client {CLIENT_ID}: Connection closed during manual disconnect sequence."
             )
             return  # Expected if server closes after we ack disconnect command
 
         close_code = e.rcvd.code if e.rcvd else None
         close_reason = e.rcvd.reason if e.rcvd else ""
-        print(
+        logger.info(
             f"Client {CLIENT_ID}: Connection closed. "
             f"Code: {close_code}, Reason: '{close_reason}'"
         )
         if (
             close_code == 1000
         ):  # Server initiated normal disconnect (e.g. after sending command)
-            print(
+            logger.info(
                 f"Client {CLIENT_ID}: Server closed connection normally (code 1000). Signaling shutdown."
             )
             manual_disconnect_initiated = True  # Signal to not reconnect
@@ -212,7 +218,9 @@ async def listen_for_commands(websocket):
         raise  # Re-raise to be caught by connect_and_send_updates to potentially retry
     except Exception as e:
         if not manual_disconnect_initiated:
-            print(f"Client {CLIENT_ID}: Unexpected error in command listener: {e}")
+            logger.error(
+                f"Client {CLIENT_ID}: Unexpected error in command listener: {e}"
+            )
             manual_disconnect_initiated = (
                 True  # Safety: signal disconnect on unknown errors in listener
             )
@@ -228,14 +236,18 @@ async def send_status_update_periodically(websocket):
                 await send_full_status_update(websocket)
             # Sleep for the defined interval before the next update or check.
             await asyncio.sleep(STATUS_INTERVAL)
-        print(f"Client {CLIENT_ID}: Exiting periodic sender due to disconnect signal.")
+        logger.info(
+            f"Client {CLIENT_ID}: Exiting periodic sender due to disconnect signal."
+        )
     except ConnectionClosed:
         if not manual_disconnect_initiated:
-            print(f"Client {CLIENT_ID}: Connection lost during periodic update.")
+            logger.warning(
+                f"Client {CLIENT_ID}: Connection lost during periodic update."
+            )
         raise  # Re-raise for outer loop to handle (or not if flag is set)
     except Exception as e:
         if not manual_disconnect_initiated:
-            print(f"Client {CLIENT_ID}: Error in periodic sender: {e}")
+            logger.error(f"Client {CLIENT_ID}: Error in periodic sender: {e}")
             manual_disconnect_initiated = True  # Safety net
         raise
 
@@ -250,9 +262,9 @@ async def connect_and_send_updates():
         listener_task = None
         periodic_sender_task = None
         try:
-            print(f"Client {CLIENT_ID}: Attempting to connect to {SERVER_URL}...")
+            logger.info(f"Client {CLIENT_ID}: Attempting to connect to {SERVER_URL}...")
             websocket = await websockets.connect(SERVER_URL)
-            print(f"Client {CLIENT_ID} connected to {SERVER_URL}")
+            logger.info(f"Client {CLIENT_ID}: Connected to server.")
             delay = RECONNECT_DELAY  # Reset delay on successful connection
 
             # Send initial registration message
@@ -284,7 +296,7 @@ async def connect_and_send_updates():
                 if isinstance(task_result, Exception):
                     exc = task_result
                     if isinstance(exc, ClientInitiatedDisconnect):
-                        print(
+                        logger.info(
                             f"Client {CLIENT_ID}: "
                             f"Client initiated disconnect processed."
                         )
@@ -293,7 +305,7 @@ async def connect_and_send_updates():
                         # This will be handled by the outer ConnectionClosed handler
                         raise exc  # Re-raise to trigger specific handling
                     else:
-                        print(
+                        logger.error(
                             f"Client {CLIENT_ID}: "
                             f"Error in task: {exc}. Signaling shutdown."
                         )
@@ -301,31 +313,33 @@ async def connect_and_send_updates():
 
             # If manual_disconnect_initiated is True, break the loop after cleanup
             if manual_disconnect_initiated:
-                print(f"Client {CLIENT_ID}: Breaking main loop for shutdown.")
+                logger.info(f"Client {CLIENT_ID}: Breaking main loop for shutdown.")
                 break
 
         except InvalidURI:
-            print(f"Client {CLIENT_ID}: Invalid server URI: {SERVER_URL}. Exiting.")
+            logger.error(
+                f"Client {CLIENT_ID}: Invalid server URI: {SERVER_URL}. Exiting."
+            )
             manual_disconnect_initiated = True  # Prevent further attempts
             break  # Exit the loop
         except ConnectionRefusedError:
-            print(
+            logger.warning(
                 f"Client {CLIENT_ID}: Connection refused. "
                 f"Retrying in {delay:.2f} seconds..."
             )
         except ConnectionClosed as e:
             close_code = e.rcvd.code if e.rcvd else None
             close_reason = e.rcvd.reason if e.rcvd else ""
-            print(
+            logger.info(
                 f"Client {CLIENT_ID}: Connection closed. "
                 f"Code: {close_code}, Reason: '{close_reason}'"
             )
             if manual_disconnect_initiated:
-                print(f"Client {CLIENT_ID}: Connection closed during shutdown.")
+                logger.info(f"Client {CLIENT_ID}: Connection closed during shutdown.")
                 break  # Exit loop if disconnect was intentional
 
             if close_code == 4008:  # Duplicate client ID
-                print(
+                logger.warning(
                     f"Client {CLIENT_ID}: Duplicate client ID detected (4008). "
                     f"Generating new ID and retrying immediately."
                 )
@@ -334,14 +348,14 @@ async def connect_and_send_updates():
                 delay = 0  # Retry immediately
                 continue  # Skip sleep and retry connection immediately
             elif close_code == 1000:  # Normal closure by server
-                print(
+                logger.info(
                     f"Client {CLIENT_ID}: Server closed connection (1000). Will attempt to reconnect."
                 )
                 # Standard delay will apply before reconnecting
             # For other close codes, standard delay applies
 
         except asyncio.CancelledError:
-            print(f"Client {CLIENT_ID}: Main connection task cancelled. Exiting.")
+            logger.info(f"Client {CLIENT_ID}: Main connection task cancelled. Exiting.")
             manual_disconnect_initiated = True
             break
         except Exception as e:
@@ -384,12 +398,14 @@ async def connect_and_send_updates():
 
 
 if __name__ == "__main__":
-    print(f"Starting client with ID: {CLIENT_ID}, Name: {CLIENT_NAME}")
+    logger.info(f"Starting client with ID: {CLIENT_ID}, Name: {CLIENT_NAME}")
     try:
         asyncio.run(connect_and_send_updates())
     except KeyboardInterrupt:
-        print(f"Client {CLIENT_ID}: Keyboard interrupt received. Shutting down...")
+        logger.info(
+            f"Client {CLIENT_ID}: Keyboard interrupt received. Shutting down..."
+        )
     finally:
         # This ensures the flag is set if shutdown initiated by Ctrl+C
         manual_disconnect_initiated = True
-        print(f"Client {CLIENT_ID}: Final cleanup.")
+        logger.info(f"Client {CLIENT_ID}: Final cleanup.")
