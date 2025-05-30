@@ -74,12 +74,12 @@ def setup_logging() -> None:
         structlog.stdlib.add_logger_name,
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         add_service_info,
     ]
 
     if JSON_LOGS:
         processors = shared_processors + [
+            structlog.processors.format_exc_info,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.JSONRenderer(),
         ]

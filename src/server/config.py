@@ -34,9 +34,6 @@ WEBSOCKET_CLOSE_CODE_INVALID_PAYLOAD = 1007  # Invalid frame payload data
 # --- API Endpoint Paths --- #
 WEBSOCKET_ENDPOINT_PATH = "/ws"
 STATUSES_ENDPOINT_PATH = "/api/v1/statuses"
-DISCONNECT_CLIENT_ENDPOINT_PATH = "/api/v1/clients/{client_id}/disconnect"
-PAUSE_CLIENT_ENDPOINT_PATH = "/api/v1/clients/{client_id}/pause"
-RESUME_CLIENT_ENDPOINT_PATH = "/api/v1/clients/{client_id}/resume"
 HEALTH_ENDPOINT_PATH = "/api/v1/health"
 
 # --- Logging Configuration (Placeholder) ---

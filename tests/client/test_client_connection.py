@@ -84,10 +84,12 @@ async def test_connection_establishment(mock_websocket_connection):
 
     # Check the first call (registration message)
     first_call_data = json.loads(mock_ws.send.call_args_list[0][0][0])
-    assert first_call_data["type"] == "register"
     assert first_call_data["client_id"] == client.CLIENT_ID
-    assert first_call_data["client_role"] == client.CLIENT_ROLE
-    assert first_call_data["client_type"] == client.CLIENT_TYPE
+    assert "status" in first_call_data
+    assert first_call_data["status"]["client_role"] == client.CLIENT_ROLE
+    assert first_call_data["status"]["client_type"] == client.CLIENT_TYPE
+    assert first_call_data["status"]["client_name"] == client.CLIENT_NAME
+    assert first_call_data["status"]["client_state"] == "initializing"
 
     # Check the second call (initial status message)
     second_call_data = json.loads(mock_ws.send.call_args_list[1][0][0])

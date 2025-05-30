@@ -139,6 +139,44 @@ app.add_middleware(
 )
 
 
+# REST API Endpoints (must be before static file mounting)
+@app.get(config.STATUSES_ENDPOINT_PATH)
+async def get_all_statuses():
+    """Get all client statuses via HTTP (for frontend polling fallback)."""
+    try:
+        clients_data, redis_status_str, error_msg = await get_all_client_statuses()
+
+        response = {
+            "clients": clients_data if clients_data is not None else {},
+            "redis_status": redis_status_str or "unknown",
+        }
+
+        if error_msg:
+            response["error_redis"] = error_msg
+
+        return response
+    except Exception as e:
+        logger.error(
+            f"Error in GET {config.STATUSES_ENDPOINT_PATH}: {e}", exc_info=True
+        )
+        return {
+            "clients": {},
+            "redis_status": "unknown",
+            "error": "Failed to retrieve client statuses",
+        }
+
+
+@app.get(config.HEALTH_ENDPOINT_PATH)
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "redis_status": status_store.get("redis", "unknown"),
+        "active_workers": len(worker_connections),
+        "active_frontends": len(frontend_connections),
+    }
+
+
 @app.websocket(config.WEBSOCKET_ENDPOINT_PATH)
 async def websocket_endpoint(websocket: WebSocket):
     client_id: str | None = None

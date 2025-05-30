@@ -56,12 +56,14 @@ def get_current_status_payload() -> dict:
 async def send_registration_message(websocket):
     """Sends the initial registration message to the server."""
     registration_payload = {
-        "type": "register",
         "client_id": CLIENT_ID,
-        "client_name": CLIENT_NAME,
-        "client_role": CLIENT_ROLE,
-        "client_type": CLIENT_TYPE,
-        "timestamp": datetime.now(UTC).isoformat(),
+        "status": {
+            "client_role": CLIENT_ROLE,
+            "client_type": CLIENT_TYPE,
+            "client_name": CLIENT_NAME,
+            "client_state": "initializing",
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
     }
     await websocket.send(json.dumps(registration_payload))
     print(f"Sent registration message: {registration_payload}")
@@ -273,12 +275,12 @@ async def connect_and_send_updates():
             )
 
             # Wait for either task to complete (or be cancelled)
-            done, pending = await asyncio.gather(
+            task_results = await asyncio.gather(
                 listener_task, periodic_sender_task, return_exceptions=True
             )
 
             # Handle results/exceptions from tasks
-            for task_result in done:  # Changed variable name for clarity
+            for task_result in task_results:
                 if isinstance(task_result, Exception):
                     exc = task_result
                     if isinstance(exc, ClientInitiatedDisconnect):
