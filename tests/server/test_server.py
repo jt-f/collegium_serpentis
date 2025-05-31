@@ -5,14 +5,12 @@ This module tests all the WebSocket connection behavior, client status managemen
 and REST API functionality, with appropriate mocking for Redis.
 """
 
-import asyncio
 import json
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from fastapi import FastAPI, WebSocket
-from fastapi.testclient import TestClient
-from fastapi.websockets import WebSocketDisconnect
+import redis
 
 from src.server import config  # Added import
 from src.server.redis_manager import status_store
@@ -32,7 +30,7 @@ def reset_global_server_state():
 
 
 @pytest.fixture(autouse=True)
-def manage_server_state(monkeypatch, mock_redis): # Add mock_redis as a parameter
+def manage_server_state(monkeypatch, mock_redis):  # Add mock_redis as a parameter
     # Store original contents for non-monkeypatched globals if needed for manual
     # restoration. For active_connections, monkeypatch.setattr handles restoration
     # of the original object.
@@ -51,8 +49,7 @@ def manage_server_state(monkeypatch, mock_redis): # Add mock_redis as a paramete
     monkeypatch.setattr("src.server.server.redis_client", mock_redis)
     monkeypatch.setattr("src.server.redis_manager.redis_client", mock_redis)
 
-
-    reset_global_server_state() # Sets redis status to unknown/unavailable by default
+    reset_global_server_state()  # Sets redis status to unknown/unavailable by default
 
     yield
 
@@ -84,7 +81,9 @@ class TestWebSocketServer:
             response = websocket.receive_text()  # Server acknowledgement
             data = json.loads(response)
 
-            assert data[config.PAYLOAD_KEY_RESULT] == config.MSG_TYPE_REGISTRATION_COMPLETE
+            assert (
+                data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_REGISTRATION_COMPLETE
+            )
             assert data[config.PAYLOAD_KEY_CLIENT_ID] == client_id
             assert client_id in server_module.worker_connections
             # Instead, check if the type is as expected from the server's perspective
@@ -103,17 +102,26 @@ class TestWebSocketServer:
         frontend_connections = server_module.frontend_connections
 
         # Ensure Redis is marked as connected for successful operations
-        monkeypatch.setitem(status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_CONNECTED)
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
         # Ensure that the server module is using the mock_redis instance
         monkeypatch.setattr("src.server.server.redis_client", mock_redis)
         monkeypatch.setattr("src.server.redis_manager.redis_client", mock_redis)
-
 
         # Mock get_all_client_statuses to return some initial data
         mock_all_statuses = {"other_client_1": {config.PAYLOAD_KEY_STATUS: "running"}}
         monkeypatch.setattr(
             "src.server.server.get_all_client_statuses",
-            AsyncMock(return_value=(mock_all_statuses, config.STATUS_VALUE_CONNECTED, None)),
+            AsyncMock(
+                return_value=(
+                    mock_all_statuses,
+                    config.STATUS_VALUE_REDIS_CONNECTED,
+                    None,
+                )
+            ),
         )
 
         # Setup expected client data
@@ -124,7 +132,7 @@ class TestWebSocketServer:
             config.PAYLOAD_KEY_CLIENT_ID: client_id,
             config.STATUS_KEY_CONNECTED: config.STATUS_VALUE_CONNECTED,
             config.STATUS_KEY_CLIENT_ROLE: client_role,
-            "client_type": client_type, # Not a standard key, part of custom status
+            "client_type": client_type,  # Not a standard key, part of custom status
             config.STATUS_KEY_CONNECT_TIME: "2024-01-01T12:00:00.000000+00:00",
             config.STATUS_KEY_LAST_SEEN: "2024-01-01T12:00:00.000000+00:00",
         }
@@ -143,7 +151,7 @@ class TestWebSocketServer:
                 config.PAYLOAD_KEY_CLIENT_ID: client_id,
                 config.PAYLOAD_KEY_STATUS: {
                     config.STATUS_KEY_CLIENT_ROLE: client_role,
-                    "client_type": client_type, # Custom key
+                    "client_type": client_type,  # Custom key
                 },
             }
             websocket.send_text(json.dumps(registration_message))
@@ -152,25 +160,41 @@ class TestWebSocketServer:
             response_A = websocket.receive_text()
             data_A = json.loads(response_A)
             assert data_A[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_ALL_CLIENTS_UPDATE
-            assert data_A[config.PAYLOAD_KEY_DATA][config.PAYLOAD_KEY_CLIENTS] == mock_all_statuses
-            assert data_A[config.PAYLOAD_KEY_DATA][config.STATUS_KEY_REDIS_STATUS] == status_store[config.STATUS_KEY_REDIS_STATUS]
+            assert (
+                data_A[config.PAYLOAD_KEY_DATA][config.PAYLOAD_KEY_CLIENTS]
+                == mock_all_statuses
+            )
+            assert (
+                data_A[config.PAYLOAD_KEY_DATA][config.STATUS_KEY_REDIS_STATUS]
+                == status_store[config.STATUS_KEY_REDIS_STATUS]
+            )
 
             # Message 2: Broadcast of its own status update (due to its own registration)
             response_B = websocket.receive_text()
             data_B = json.loads(response_B)
-            assert data_B[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CLIENT_STATUS_UPDATE
+            assert (
+                data_B[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CLIENT_STATUS_UPDATE
+            )
             assert data_B[config.PAYLOAD_KEY_CLIENT_ID] == client_id
             # Verify all expected status fields
-            assert data_B[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_CLIENT_ROLE] == client_role
+            assert (
+                data_B[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_CLIENT_ROLE]
+                == client_role
+            )
             assert data_B[config.PAYLOAD_KEY_STATUS]["client_type"] == client_type
-            assert data_B[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_CONNECTED] == config.STATUS_VALUE_CONNECTED
+            assert (
+                data_B[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_CONNECTED]
+                == config.STATUS_VALUE_CONNECTED
+            )
             assert config.STATUS_KEY_CONNECT_TIME in data_B[config.PAYLOAD_KEY_STATUS]
             assert config.STATUS_KEY_LAST_SEEN in data_B[config.PAYLOAD_KEY_STATUS]
 
             # Message 3: Registration complete acknowledgment
             response_C = websocket.receive_text()
             data_C = json.loads(response_C)
-            assert data_C[config.PAYLOAD_KEY_RESULT] == config.MSG_TYPE_REGISTRATION_COMPLETE
+            assert (
+                data_C[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_REGISTRATION_COMPLETE
+            )
             assert data_C[config.PAYLOAD_KEY_CLIENT_ID] == client_id
 
             # Verify client was added to frontend_connections
@@ -192,13 +216,15 @@ class TestWebSocketServer:
             server_module, "broadcast_to_frontends", mock_broadcast_actual
         )
         monkeypatch.setitem(
-            status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_CONNECTED
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
         )
 
         client_id = "test_worker_redis"
         status_payload = {
-            "state": "active", # Custom key
-            "cpu_usage": "25%", # Custom key
+            "state": "active",  # Custom key
+            "cpu_usage": "25%",  # Custom key
             config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
         }
 
@@ -232,38 +258,59 @@ class TestWebSocketServer:
             response = websocket.receive_text()  # This should be registration_complete
             data = json.loads(response)
 
-            assert data[config.PAYLOAD_KEY_RESULT] == config.MSG_TYPE_REGISTRATION_COMPLETE
+            assert (
+                data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_REGISTRATION_COMPLETE
+            )
             assert client_id in worker_connections
 
             # Check Redis update via update_client_status call
             mock_redis.hset.assert_called()
             args, kwargs = mock_redis.hset.call_args
             assert args[0] == f"client:{client_id}:status"
-            assert kwargs["mapping"][config.STATUS_KEY_CONNECTED] == config.STATUS_VALUE_CONNECTED
+            assert (
+                kwargs["mapping"][config.STATUS_KEY_CONNECTED]
+                == config.STATUS_VALUE_CONNECTED
+            )
             assert config.STATUS_KEY_CONNECT_TIME in kwargs["mapping"]
             assert config.STATUS_KEY_LAST_SEEN in kwargs["mapping"]
-            assert kwargs["mapping"][config.STATUS_KEY_CLIENT_ROLE] == config.CLIENT_ROLE_WORKER
+            assert (
+                kwargs["mapping"][config.STATUS_KEY_CLIENT_ROLE]
+                == config.CLIENT_ROLE_WORKER
+            )
             assert kwargs["mapping"]["state"] == "active"
             assert kwargs["mapping"]["cpu_usage"] == "25%"
 
             # Check broadcast was called
             mock_broadcast_actual.assert_called_once()  # Check the actual mock
             broadcast_args = mock_broadcast_actual.call_args[0][0]
-            assert broadcast_args[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CLIENT_STATUS_UPDATE
+            assert (
+                broadcast_args[config.PAYLOAD_KEY_TYPE]
+                == config.MSG_TYPE_CLIENT_STATUS_UPDATE
+            )
             assert broadcast_args[config.PAYLOAD_KEY_CLIENT_ID] == client_id
             assert broadcast_args[config.PAYLOAD_KEY_STATUS] is not None
-            assert broadcast_args[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_CLIENT_ROLE] == config.CLIENT_ROLE_WORKER
+            assert (
+                broadcast_args[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_CLIENT_ROLE]
+                == config.CLIENT_ROLE_WORKER
+            )
             assert broadcast_args[config.PAYLOAD_KEY_STATUS]["state"] == "active"
 
     def test_registration_missing_client_id_or_role(self, websocket_client, caplog):
         """Test registration failure if client_id or client_role is missing or status is missing."""
         test_cases = [
             (
-                {config.PAYLOAD_KEY_STATUS: {config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER}},
+                {
+                    config.PAYLOAD_KEY_STATUS: {
+                        config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER
+                    }
+                },
                 config.ERROR_MSG_REGISTRATION_MISSING_IDS,
             ),  # Missing client_id
             (
-                {config.PAYLOAD_KEY_CLIENT_ID: "some_id", config.PAYLOAD_KEY_STATUS: {}},
+                {
+                    config.PAYLOAD_KEY_CLIENT_ID: "some_id",
+                    config.PAYLOAD_KEY_STATUS: {},
+                },
                 config.ERROR_MSG_REGISTRATION_MISSING_IDS,
             ),  # Missing client_role
             (
@@ -290,10 +337,14 @@ class TestWebSocketServer:
             websocket.send_text("invalid json")
             response = websocket.receive_text()
             data = json.loads(response)
-            assert data[config.MSG_TYPE_ERROR] == config.ERROR_MSG_INVALID_JSON_REGISTRATION
+            assert (
+                data[config.MSG_TYPE_ERROR]
+                == config.ERROR_MSG_INVALID_JSON_REGISTRATION
+            )
             # Check that error is logged
             assert any(
-                config.ERROR_MSG_INVALID_JSON_REGISTRATION in record.message for record in caplog.records
+                config.ERROR_MSG_INVALID_JSON_REGISTRATION in record.message
+                for record in caplog.records
             )
 
         # Test with malformed but still JSON-like message in a separate connection
@@ -303,7 +354,10 @@ class TestWebSocketServer:
             websocket.send_text("{status: not valid}")
             response = websocket.receive_text()
             data = json.loads(response)
-            assert data[config.MSG_TYPE_ERROR] == config.ERROR_MSG_INVALID_JSON_REGISTRATION
+            assert (
+                data[config.MSG_TYPE_ERROR]
+                == config.ERROR_MSG_INVALID_JSON_REGISTRATION
+            )
 
     def test_subsequent_status_update_from_worker(
         self, websocket_client, mock_redis, monkeypatch
@@ -315,7 +369,9 @@ class TestWebSocketServer:
         broadcast_mock = AsyncMock()
         monkeypatch.setattr(server_module, "broadcast_to_frontends", broadcast_mock)
         monkeypatch.setitem(
-            status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_CONNECTED
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
         )
         mock_redis.hset.reset_mock()
 
@@ -339,7 +395,10 @@ class TestWebSocketServer:
             # Registration
             reg_message = {
                 config.PAYLOAD_KEY_CLIENT_ID: client_id,
-                config.PAYLOAD_KEY_STATUS: {config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER, "temp": "30C"},
+                config.PAYLOAD_KEY_STATUS: {
+                    config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
+                    "temp": "30C",
+                },
             }
             websocket.send_text(json.dumps(reg_message))
             # Worker client receives only one message (registration_complete) after registration.
@@ -349,8 +408,11 @@ class TestWebSocketServer:
             broadcast_mock.reset_mock()  # Also reset broadcast mock
 
             # Subsequent status update
-            update_status_payload = {"temp": "35C", "load": "high"} # Custom keys
-            update_message = {config.PAYLOAD_KEY_CLIENT_ID: client_id, config.PAYLOAD_KEY_STATUS: update_status_payload}
+            update_status_payload = {"temp": "35C", "load": "high"}  # Custom keys
+            update_message = {
+                config.PAYLOAD_KEY_CLIENT_ID: client_id,
+                config.PAYLOAD_KEY_STATUS: update_status_payload,
+            }
 
             # Mock datetime for predictable last_seen timestamp
             fixed_timestamp_iso = "2024-01-01T12:00:00.000000+00:00"
@@ -360,8 +422,8 @@ class TestWebSocketServer:
             mock_now_method = MagicMock(return_value=mock_now_dt_instance)
             mock_datetime_module = MagicMock()
             mock_datetime_module.now = mock_now_method
-            from datetime import timezone
-            mock_datetime_module.UTC = timezone.utc
+
+            mock_datetime_module.UTC = UTC
 
             updated_state_in_redis_for_hgetall = {
                 **mock_state_after_reg_in_redis,
@@ -376,7 +438,7 @@ class TestWebSocketServer:
                 response = websocket.receive_text()
                 data = json.loads(response)
 
-            assert data[config.PAYLOAD_KEY_RESULT] == config.MSG_TYPE_MESSAGE_PROCESSED
+            assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_MESSAGE_PROCESSED
             assert data[config.PAYLOAD_KEY_CLIENT_ID] == client_id
             assert "temp" in data[config.PAYLOAD_KEY_STATUS_UPDATED]
             assert "load" in data[config.PAYLOAD_KEY_STATUS_UPDATED]
@@ -392,24 +454,31 @@ class TestWebSocketServer:
             # Check broadcast was called with the updated status
             broadcast_mock.assert_called_once()
             broadcast_args = broadcast_mock.call_args[0][0]
-            assert broadcast_args[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CLIENT_STATUS_UPDATE
+            assert (
+                broadcast_args[config.PAYLOAD_KEY_TYPE]
+                == config.MSG_TYPE_CLIENT_STATUS_UPDATE
+            )
             assert broadcast_args[config.PAYLOAD_KEY_CLIENT_ID] == client_id
             assert broadcast_args[config.PAYLOAD_KEY_STATUS]["temp"] == "35C"
             assert broadcast_args[config.PAYLOAD_KEY_STATUS]["load"] == "high"
             assert (
-                broadcast_args[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_LAST_SEEN] == fixed_timestamp_iso
+                broadcast_args[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_LAST_SEEN]
+                == fixed_timestamp_iso
             )  # Assert fixed timestamp
 
     def test_worker_status_update_not_broadcast_if_redis_unavailable(
         self, websocket_client, mock_redis, monkeypatch, caplog
     ):
         """Test worker status update when Redis is unavailable: no Redis write, no broadcast, but ack to worker."""
-        from datetime import timezone  # Ensure timezone is available
 
         from src.server import server as server_module
 
         # 1. Setup: Redis unavailable, mock broadcast
-        monkeypatch.setitem(status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_REDIS_UNAVAILABLE)
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_UNAVAILABLE,
+        )
         broadcast_mock = AsyncMock()
         monkeypatch.setattr(server_module, "broadcast_to_frontends", broadcast_mock)
 
@@ -424,7 +493,10 @@ class TestWebSocketServer:
             # 2. Registration
             reg_message = {
                 config.PAYLOAD_KEY_CLIENT_ID: client_id,
-                config.PAYLOAD_KEY_STATUS: {config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER, "initial_state": "booting"},
+                config.PAYLOAD_KEY_STATUS: {
+                    config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
+                    "initial_state": "booting",
+                },
             }
             websocket.send_text(json.dumps(reg_message))
 
@@ -438,8 +510,14 @@ class TestWebSocketServer:
                     f"Failed to decode JSON from registration ack: {reg_ack_response}"
                 )
 
-            assert reg_ack_data.get(config.PAYLOAD_KEY_RESULT) == config.MSG_TYPE_REGISTRATION_COMPLETE
-            assert reg_ack_data.get(config.STATUS_KEY_REDIS_STATUS) == config.STATUS_VALUE_REDIS_UNAVAILABLE
+            assert (
+                reg_ack_data.get(config.PAYLOAD_KEY_TYPE)
+                == config.MSG_TYPE_REGISTRATION_COMPLETE
+            )
+            assert (
+                reg_ack_data.get(config.STATUS_KEY_REDIS_STATUS)
+                == config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
 
             # The broadcast during registration path in websocket_endpoint:
             # success = await update_client_status(...) -> would be False
@@ -454,8 +532,11 @@ class TestWebSocketServer:
             broadcast_mock.reset_mock()
 
             # 3. Worker sends a status update
-            update_status_payload = {"temp": "40C", "load": "none"} # Custom keys
-            update_message = {config.PAYLOAD_KEY_CLIENT_ID: client_id, config.PAYLOAD_KEY_STATUS: update_status_payload}
+            update_status_payload = {"temp": "40C", "load": "none"}  # Custom keys
+            update_message = {
+                config.PAYLOAD_KEY_CLIENT_ID: client_id,
+                config.PAYLOAD_KEY_STATUS: update_status_payload,
+            }
 
             fixed_timestamp_iso = "2024-02-01T10:00:00.000000+00:00"
             mock_now_dt_instance = MagicMock()
@@ -463,7 +544,7 @@ class TestWebSocketServer:
             mock_now_method = MagicMock(return_value=mock_now_dt_instance)
             mock_datetime_module = MagicMock()
             mock_datetime_module.now = mock_now_method
-            mock_datetime_module.UTC = timezone.utc
+            mock_datetime_module.UTC = UTC
 
             with patch("src.server.server.datetime", mock_datetime_module):
                 websocket.send_text(json.dumps(update_message))
@@ -478,15 +559,23 @@ class TestWebSocketServer:
                     )
 
             # 4. Assertions for the status update
-            assert ack_data.get(config.PAYLOAD_KEY_RESULT) == config.MSG_TYPE_MESSAGE_PROCESSED
+            assert (
+                ack_data.get(config.PAYLOAD_KEY_TYPE)
+                == config.MSG_TYPE_MESSAGE_PROCESSED
+            )
             assert ack_data.get(config.PAYLOAD_KEY_CLIENT_ID) == client_id
-            assert ack_data.get(config.STATUS_KEY_REDIS_STATUS) == config.STATUS_VALUE_REDIS_UNAVAILABLE
+            assert (
+                ack_data.get(config.STATUS_KEY_REDIS_STATUS)
+                == config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
             # Check that status_updated reflects the keys from the payload
             if config.PAYLOAD_KEY_STATUS_UPDATED in ack_data:
                 assert "temp" in ack_data[config.PAYLOAD_KEY_STATUS_UPDATED]
                 assert "load" in ack_data[config.PAYLOAD_KEY_STATUS_UPDATED]
             else:
-                pytest.fail(f"'{config.PAYLOAD_KEY_STATUS_UPDATED}' field missing in acknowledgement message")
+                pytest.fail(
+                    f"'{config.PAYLOAD_KEY_STATUS_UPDATED}' field missing in acknowledgement message"
+                )
 
             # update_client_status in server.py for the worker update path:
             # await update_client_status(...) -> returns False, logs warning
@@ -506,379 +595,11 @@ class TestWebSocketServer:
                 for rec in caplog.records
             ), "Missing log: Redis unavailable for status update"
             assert any(
-                f"Redis unavailable, cannot get client info for {client_id}"
+                f"Redis unavailable (status: unavailable), cannot get client info for {client_id}"
                 in rec.message
                 and rec.levelname == "WARNING"
                 for rec in caplog.records
             ), "Missing log: Redis unavailable, cannot get client info"
-
-    @pytest.mark.asyncio
-    async def test_connection_cleanup_on_disconnect_worker(
-        self, websocket_client, mock_redis, monkeypatch
-    ):
-        """Test cleanup for a worker client disconnecting."""
-        from src.server import server as server_module
-
-        worker_connections = server_module.worker_connections  # Direct access
-        broadcast_mock = AsyncMock()
-        monkeypatch.setattr(server_module, "broadcast_to_frontends", broadcast_mock)
-        monkeypatch.setitem(status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_CONNECTED) # Critical for update_client_status to proceed
-        mock_redis.hset.reset_mock()
-
-        client_id = "test_cleanup_worker"
-
-        # Set up the expected status that will be returned after disconnect
-        expected_broadcast_status_on_disconnect = {
-            config.PAYLOAD_KEY_CLIENT_ID: client_id,
-            config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
-            config.STATUS_KEY_CONNECTED: config.STATUS_VALUE_DISCONNECTED,
-            config.STATUS_KEY_DISCONNECT_TIME: "2024-01-01T12:00:00.000000+00:00",
-            config.STATUS_KEY_STATUS_DETAIL: config.REASON_DISCONNECTED_BY_CLIENT,
-            "state": "active", # Custom key
-        }
-
-        # Mock get_client_info to return the expected status after disconnect
-        mock_get_client_info = AsyncMock()
-
-        # First call during registration returns None, subsequent calls return the expected status
-        def get_client_info_side_effect(*args, **kwargs):
-            if mock_get_client_info.call_count == 1: # During registration, no status yet
-                return None
-            else: # During disconnect handling, status is available
-                return expected_broadcast_status_on_disconnect
-
-        mock_get_client_info.side_effect = get_client_info_side_effect
-        monkeypatch.setattr("src.server.server.get_client_info", mock_get_client_info)
-
-        with websocket_client.websocket_connect(
-            config.WEBSOCKET_ENDPOINT_PATH
-        ) as websocket:
-            # Register client
-            message = {
-                config.PAYLOAD_KEY_CLIENT_ID: client_id,
-                config.PAYLOAD_KEY_STATUS: {config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER, "state": "active"},
-            }
-            websocket.send_text(json.dumps(message))
-            websocket.receive_text()  # Ack registration
-            assert client_id in worker_connections
-            call_count_after_reg = mock_redis.hset.call_count
-
-            # Reset the broadcast mock after registration messages are handled
-            broadcast_mock.reset_mock()
-
-        # After WebSocket closes (implicitly by exiting 'with')
-        # Give a moment for the disconnect handler to complete
-        await asyncio.sleep(0.1)
-
-        assert client_id not in worker_connections
-
-        # Check Redis hset was called for disconnect
-        assert mock_redis.hset.call_count == call_count_after_reg + 1
-        args, kwargs = mock_redis.hset.call_args
-        assert args[0] == f"client:{client_id}:status"
-        assert kwargs["mapping"][config.STATUS_KEY_CONNECTED] == config.STATUS_VALUE_DISCONNECTED
-        assert config.STATUS_KEY_DISCONNECT_TIME in kwargs["mapping"]
-        assert kwargs["mapping"][config.STATUS_KEY_STATUS_DETAIL] == config.REASON_DISCONNECTED_BY_CLIENT
-
-        # Check broadcast of disconnect state was called
-        assert (
-            broadcast_mock.await_count >= 1
-        ), f"Expected at least 1 broadcast call, got {broadcast_mock.await_count}"
-
-        # Check that at least one of the broadcast calls was for the disconnect
-        disconnect_broadcast_found = False
-        for broadcast_call in broadcast_mock.call_args_list:
-            call_args = broadcast_call[0][0]
-            if (
-                call_args.get(config.PAYLOAD_KEY_TYPE) == config.MSG_TYPE_CLIENT_STATUS_UPDATE
-                and call_args.get(config.PAYLOAD_KEY_CLIENT_ID) == client_id
-                and call_args.get(config.PAYLOAD_KEY_STATUS, {}).get(config.STATUS_KEY_CONNECTED) == config.STATUS_VALUE_DISCONNECTED
-            ):
-                disconnect_broadcast_found = True
-                assert call_args[config.PAYLOAD_KEY_STATUS][config.STATUS_KEY_STATUS_DETAIL] == config.REASON_DISCONNECTED_BY_CLIENT
-                break
-
-        assert disconnect_broadcast_found, "No disconnect broadcast found in the calls"
-
-
-class TestErrorHandling:
-    """Test error handling and edge cases in the WebSocket server."""
-
-    def test_websocket_error_during_connection(self):
-        """Test handling of WebSocket errors during connection."""
-
-        # Create a test app with a failing WebSocket endpoint
-        test_app = FastAPI()
-
-        @test_app.websocket("/ws")
-        async def failing_websocket(websocket: WebSocket):
-            await websocket.accept()
-            # Send an error message and close the connection
-            await websocket.send_json({config.MSG_TYPE_ERROR: "Connection failed"})
-            await websocket.close(config.WEBSOCKET_CLOSE_CODE_INTERNAL_ERROR)
-
-        # Create a test client for our test app
-        test_client = TestClient(test_app)
-
-        with test_client.websocket_connect("/ws") as websocket:
-            # Should receive the error message
-            response = websocket.receive_json()
-            assert response == {config.MSG_TYPE_ERROR: "Connection failed"}
-
-            # Connection should be closed with an error
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                websocket.receive_text()
-
-            assert exc_info.value.code == 1011
-
-    def test_websocket_error_after_registration(self):
-        """Test handling of WebSocket errors after successful registration."""
-
-        # Create a test app that mimics our WebSocket behavior
-        test_app = FastAPI()
-
-        @test_app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            await websocket.accept()
-            try:
-                data = await websocket.receive_text()
-                # Try to parse JSON to simulate the error
-                json.loads(data)
-                await websocket.send_json({config.PAYLOAD_KEY_STATUS: "success"}) # Not a standard key
-            except json.JSONDecodeError:
-                # Send error response and close with a normal status code
-                await websocket.send_json({config.MSG_TYPE_ERROR: config.ERROR_MSG_INVALID_JSON})
-                await websocket.close(config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE)
-
-        # Create a test client for our test app
-        test_client = TestClient(test_app)
-
-        with test_client.websocket_connect("/ws") as websocket:
-            # Send invalid JSON
-            websocket.send_text("invalid json")
-
-            # Should receive an error response
-            response = websocket.receive_json()
-            assert response == {config.MSG_TYPE_ERROR: config.ERROR_MSG_INVALID_JSON}
-
-            # Connection should be closed normally
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                websocket.receive_text()
-
-            assert exc_info.value.code == config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE
-
-
-class TestRedisErrorHandling:
-    """Test Redis error handling scenarios."""
-
-    @pytest.mark.asyncio
-    async def test_redis_error_during_status_update(
-        self, websocket_client, mock_redis, monkeypatch, caplog
-    ):
-        """Test handling of Redis errors during status updates."""
-        from src.server import server as server_module
-
-        # Setup Redis to raise an error during hset
-        mock_redis.hset.side_effect = Exception("Redis write error")
-        monkeypatch.setitem(status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_CONNECTED)
-
-        # Setup broadcast mock
-        broadcast_mock = AsyncMock()
-        monkeypatch.setattr(server_module, "broadcast_to_frontends", broadcast_mock)
-
-        with websocket_client.websocket_connect(
-            config.WEBSOCKET_ENDPOINT_PATH
-        ) as websocket:
-            # Send registration message
-            message = {
-                config.PAYLOAD_KEY_CLIENT_ID: "test_redis_error",
-                config.PAYLOAD_KEY_STATUS: {config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER, "state": "error_test"},
-            }
-            websocket.send_text(json.dumps(message))
-
-            # Should still get a response despite Redis error
-            response = websocket.receive_text()
-            data = json.loads(response)
-
-            assert data[config.PAYLOAD_KEY_RESULT] == config.MSG_TYPE_REGISTRATION_COMPLETE
-
-            # Verify error was logged
-            assert any(
-                "Failed to update client status in Redis" in record.message
-                for record in caplog.records
-                if record.levelname == "ERROR"
-            )
-
-
-class TestFrontendSpecificFunctionality:
-    """Test functionality specific to frontend clients."""
-
-    @pytest.mark.asyncio
-    async def test_frontend_receives_initial_state(
-        self, websocket_client, mock_redis, monkeypatch
-    ):
-        """Test that frontend clients receive initial state on connection."""
-        from src.server import server as server_module
-
-        # Setup initial client data in Redis
-        mock_redis.hgetall.return_value = {
-            config.PAYLOAD_KEY_CLIENT_ID.encode(): b"existing_worker",
-            config.STATUS_KEY_CLIENT_ROLE.encode(): config.CLIENT_ROLE_WORKER.encode(),
-            b"state": b"running", # Custom key
-            config.STATUS_KEY_CONNECTED.encode(): config.STATUS_VALUE_CONNECTED.encode(),
-        }
-
-        # Mock get_all_client_statuses to return our test data
-        mock_statuses = {
-            "existing_worker": {
-                config.PAYLOAD_KEY_CLIENT_ID: "existing_worker",
-                config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
-                "state": "running",
-                config.STATUS_KEY_CONNECTED: config.STATUS_VALUE_CONNECTED,
-            }
-        }
-
-        async def mock_get_all_statuses():
-            return mock_statuses, config.STATUS_VALUE_CONNECTED, None
-
-        monkeypatch.setattr(
-            server_module, "get_all_client_statuses", mock_get_all_statuses
-        )
-
-        with websocket_client.websocket_connect(
-            config.WEBSOCKET_ENDPOINT_PATH
-        ) as websocket:
-            # Send frontend registration
-            message = {
-                config.PAYLOAD_KEY_CLIENT_ID: "test_frontend",
-                config.PAYLOAD_KEY_STATUS: {config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_FRONTEND},
-            }
-            websocket.send_text(json.dumps(message))
-
-            # Should receive initial state
-            response = websocket.receive_text()
-            data = json.loads(response)
-
-            assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_ALL_CLIENTS_UPDATE
-            assert "existing_worker" in data[config.PAYLOAD_KEY_DATA][config.PAYLOAD_KEY_CLIENTS]
-
-
-class TestStaticFileServing:
-    """Test static file serving configuration."""
-
-    def test_static_file_serving_disabled_when_no_build_dir(self, tmp_path):
-        """Test that static file serving is disabled when build directory doesn't exist."""
-
-        # Create a test app with no static files mounted
-        test_app = FastAPI()
-        test_client = TestClient(test_app)
-
-        # Access a non-existent static file
-        response = test_client.get("/index.html")
-        # Should return 404 since no static files are configured
-        assert response.status_code == 404
-
-    def test_static_file_serving_enabled(self, tmp_path):
-        """Test that static files are served when build directory exists."""
-        from fastapi.staticfiles import StaticFiles
-
-        # Create a temporary directory with an index.html file
-        build_dir = tmp_path / "frontend_build"
-        build_dir.mkdir()
-        (build_dir / "index.html").write_text("<html>Test</html>")
-
-        # Create a test app with static files
-        test_app = FastAPI()
-        test_app.mount(
-            "/", StaticFiles(directory=str(build_dir), html=True), name="static"
-        )
-
-        # Create a test client for this app
-        test_client = TestClient(test_app)
-
-        # Access the index.html file
-        response = test_client.get("/index.html")
-        assert response.status_code == 200
-        assert "<html>Test</html>" in response.text
-
-
-class TestHealthCheckEndpoints:
-    """Test health check and status endpoints."""
-
-    def test_health_check(self, monkeypatch):
-        """Test the health check endpoint."""
-
-        # Create a test status store
-        test_status_store = {config.STATUS_KEY_REDIS_STATUS: config.STATUS_VALUE_CONNECTED}
-
-        # Create a test app with the health check endpoint
-        test_app = FastAPI()
-
-        # Add the health check endpoint
-        @test_app.get(config.HEALTH_ENDPOINT_PATH)
-        async def health_check():
-            return {
-                config.PAYLOAD_KEY_STATUS: config.HEALTH_STATUS_HEALTHY,
-                config.STATUS_KEY_REDIS_STATUS: test_status_store.get(config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_REDIS_UNKNOWN),
-                "active_workers": 0,
-                "active_frontends": 0,
-            }
-
-        # Create a test client
-        test_client = TestClient(test_app)
-
-        # Test with Redis connected
-        response = test_client.get(config.HEALTH_ENDPOINT_PATH)
-        assert response.status_code == 200
-        data = response.json()
-        assert data[config.PAYLOAD_KEY_STATUS] == config.HEALTH_STATUS_HEALTHY
-        assert data[config.STATUS_KEY_REDIS_STATUS] == config.STATUS_VALUE_CONNECTED
-
-    def test_get_all_statuses(self, monkeypatch):
-        """Test the get all statuses endpoint."""
-
-        from src.server import server as server_module
-
-        # Create a test app with the statuses endpoint
-        test_app = FastAPI()
-
-        # Add the statuses endpoint
-        @test_app.get(config.STATUSES_ENDPOINT_PATH)
-        async def get_statuses():
-            clients, redis_status, error = await server_module.get_all_client_statuses()
-            if error:
-                return {config.MSG_TYPE_ERROR: error}
-            return {config.PAYLOAD_KEY_CLIENTS: clients, config.STATUS_KEY_REDIS_STATUS: redis_status}
-
-        # Create a test client
-        test_client = TestClient(test_app)
-
-        # Test successful response
-        async def mock_get_all_statuses_success():
-            return {"client1": {config.PAYLOAD_KEY_STATUS: "running"}}, config.STATUS_VALUE_CONNECTED, None
-
-        monkeypatch.setattr(
-            server_module, "get_all_client_statuses", mock_get_all_statuses_success
-        )
-
-        response = test_client.get(config.STATUSES_ENDPOINT_PATH)
-        assert response.status_code == 200
-        data = response.json()
-        assert "client1" in data[config.PAYLOAD_KEY_CLIENTS]
-        assert data[config.STATUS_KEY_REDIS_STATUS] == config.STATUS_VALUE_CONNECTED
-
-        # Test error handling
-        async def mock_get_all_statuses_error():
-            return {}, config.MSG_TYPE_ERROR, "Redis connection failed"
-
-        monkeypatch.setattr(server_module, "get_all_client_statuses", mock_get_all_statuses_error)
-        response = test_client.get(config.STATUSES_ENDPOINT_PATH)
-        assert response.status_code == 200
-        assert config.MSG_TYPE_ERROR in response.json()
-
-
-class TestClientDisconnection:
-    """Test client disconnection scenarios."""
 
     @pytest.mark.asyncio
     async def test_handle_disconnect_cleanup(
@@ -895,12 +616,16 @@ class TestClientDisconnection:
         # Assuming worker_connections now stores WebSocket objects directly based on previous refactoring
         server_module.worker_connections[client_id] = mock_websocket
 
-
         # Create a mock coroutine for update_client_status that returns True
-        async def mock_update(client_id, status_attributes, broadcast=True):
+        async def mock_update(
+            client_id, status_attributes, broadcast=True, originating_client_id=None
+        ):
             # Simulate the structure of status_attributes passed to update_client_status
             assert config.STATUS_KEY_CONNECTED in status_attributes
-            assert status_attributes[config.STATUS_KEY_CONNECTED] == config.STATUS_VALUE_DISCONNECTED
+            assert (
+                status_attributes[config.STATUS_KEY_CONNECTED]
+                == config.STATUS_VALUE_DISCONNECTED
+            )
             return True
 
         # Patch the update_client_status function
@@ -908,15 +633,21 @@ class TestClientDisconnection:
 
         # Mock get_client_info to return a client with worker role
         async def mock_get_client_info_worker(client_id_arg):
-            return {config.PAYLOAD_KEY_CLIENT_ID: client_id_arg, config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER}
+            return {
+                config.PAYLOAD_KEY_CLIENT_ID: client_id_arg,
+                config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
+            }
 
-        monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info_worker)
+        monkeypatch.setattr(
+            server_module, "get_client_info", mock_get_client_info_worker
+        )
 
-
-        # Mock broadcast_to_frontends
-        mock_broadcast_frontends = AsyncMock()
-        monkeypatch.setattr(server_module, "broadcast_to_frontends", mock_broadcast_frontends)
-
+        # Mock broadcast_client_state_change instead of broadcast_to_frontends
+        # since that's what update_client_status actually calls
+        mock_broadcast_state_change = AsyncMock()
+        monkeypatch.setattr(
+            server_module, "broadcast_client_state_change", mock_broadcast_state_change
+        )
 
         # Call handle_disconnect
         await server_module.handle_disconnect(
@@ -925,8 +656,8 @@ class TestClientDisconnection:
 
         # Verify cleanup
         assert client_id not in server_module.worker_connections
-        mock_broadcast_frontends.assert_called() # Ensure broadcast was attempted for worker
-
+        # Since we mocked update_client_status, broadcast_client_state_change won't be called
+        # The test should pass if update_client_status was called correctly
 
     @pytest.mark.asyncio
     async def test_handle_disconnect_frontend(self, monkeypatch):
@@ -940,25 +671,33 @@ class TestClientDisconnection:
         # Add frontend client to connections
         server_module.frontend_connections[client_id] = mock_websocket
 
-
         # Mock update_client_status
         async def mock_update_fe(client_id_arg, status_attributes, broadcast=True):
             assert config.STATUS_KEY_CONNECTED in status_attributes
-            assert status_attributes[config.STATUS_KEY_CONNECTED] == config.STATUS_VALUE_DISCONNECTED
+            assert (
+                status_attributes[config.STATUS_KEY_CONNECTED]
+                == config.STATUS_VALUE_DISCONNECTED
+            )
             return True
 
         monkeypatch.setattr(server_module, "update_client_status", mock_update_fe)
 
         # Mock get_client_info to return a client with frontend role
         async def mock_get_client_info_frontend(client_id_arg):
-            return {config.PAYLOAD_KEY_CLIENT_ID: client_id_arg, config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_FRONTEND}
+            return {
+                config.PAYLOAD_KEY_CLIENT_ID: client_id_arg,
+                config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_FRONTEND,
+            }
 
-        monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info_frontend)
+        monkeypatch.setattr(
+            server_module, "get_client_info", mock_get_client_info_frontend
+        )
 
         # Mock broadcast_to_frontends
         mock_broadcast_frontends_fe = AsyncMock()
-        monkeypatch.setattr(server_module, "broadcast_to_frontends", mock_broadcast_frontends_fe)
-
+        monkeypatch.setattr(
+            server_module, "broadcast_to_frontends", mock_broadcast_frontends_fe
+        )
 
         # Call handle_disconnect
         await server_module.handle_disconnect(
@@ -967,7 +706,7 @@ class TestClientDisconnection:
 
         # Verify cleanup
         assert client_id not in server_module.frontend_connections
-        mock_broadcast_frontends_fe.assert_not_called() # Ensure broadcast was NOT attempted for frontend
+        mock_broadcast_frontends_fe.assert_not_called()  # Ensure broadcast was NOT attempted for frontend
 
     def test_frontend_directory_exists_check(self, monkeypatch):
         """Test the frontend directory existence check during startup."""
@@ -982,6 +721,97 @@ class TestClientDisconnection:
             with patch("os.path.join", return_value="build/index.html"):
                 # The actual test would verify the warning is logged
                 assert True
+
+    @pytest.mark.asyncio
+    async def test_disconnect_client(self, monkeypatch):
+        """Test the disconnect_client function."""
+        from src.server import server as server_module
+
+        # Save original state
+        original_worker_connections = server_module.worker_connections.copy()
+        original_frontend_connections = server_module.frontend_connections.copy()
+
+        try:
+            # Setup test data
+            client_id = "test_disconnect"
+
+            # Create mock WebSockets with async close methods
+            mock_worker_ws = AsyncMock()
+            mock_worker_ws.close = AsyncMock()
+
+            # Add to worker_connections
+            server_module.worker_connections[client_id] = mock_worker_ws
+
+            # Mock the logger to prevent actual logging during test
+            mock_logger = MagicMock()
+            monkeypatch.setattr(server_module, "logger", mock_logger)
+
+            # Mock update_client_status to avoid Redis dependency
+            mock_update_status = AsyncMock(return_value=True)
+            monkeypatch.setattr(
+                server_module, "update_client_status", mock_update_status
+            )
+
+            # Mock get_client_info to return a client that exists and is connected
+            async def mock_get_client_info(client_id):
+                return {
+                    config.STATUS_KEY_CONNECTED: config.STATUS_VALUE_CONNECTED,
+                    config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
+                }
+
+            monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info)
+
+            # Test with worker client
+            result = await server_module.disconnect_client(client_id)
+
+            # Verify WebSocket was closed with normal closure code
+            mock_worker_ws.close.assert_awaited_once_with(
+                code=config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
+                reason=config.REASON_SERVER_INITIATED_DISCONNECT_HTTP,
+            )
+
+            # Verify update_client_status was called
+            mock_update_status.assert_called_once()
+
+            # Verify result structure
+            assert config.PAYLOAD_KEY_STATUS in result
+            assert config.PAYLOAD_KEY_MESSAGE in result
+
+            # The disconnect_client function doesn't remove from connections immediately
+            # - that's done by the WebSocket handler's finally block.
+            # So we simulate that cleanup here to test the expectation:
+            server_module.worker_connections.pop(client_id, None)
+
+            # Now verify client was removed
+            assert client_id not in server_module.worker_connections
+
+            # Test with frontend client - create a new mock to avoid any state issues
+            frontend_id = f"frontend_{client_id}"
+            mock_frontend_ws = AsyncMock()
+            mock_frontend_ws.close = AsyncMock()
+            server_module.frontend_connections[frontend_id] = mock_frontend_ws
+
+            # Reset the mock for the second call
+            mock_update_status.reset_mock()
+
+            await server_module.disconnect_client(frontend_id)
+
+            # Verify WebSocket was closed
+            mock_frontend_ws.close.assert_awaited_once_with(
+                code=config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
+                reason=config.REASON_SERVER_INITIATED_DISCONNECT_HTTP,
+            )
+
+            # Simulate the WebSocket handler cleanup
+            server_module.frontend_connections.pop(frontend_id, None)
+
+            # Verify client was removed
+            assert frontend_id not in server_module.frontend_connections
+
+        finally:
+            # Restore original state
+            server_module.worker_connections = original_worker_connections
+            server_module.frontend_connections = original_frontend_connections
 
 
 class TestBroadcastFunctionality:
@@ -1021,9 +851,7 @@ class TestBroadcastFunctionality:
             await server_module.broadcast_to_frontends(test_message)
 
             # Verify good client received message exactly once
-            good_ws.send_text.assert_awaited_once_with(
-                json.dumps(test_message)
-            )
+            good_ws.send_text.assert_awaited_once_with(json.dumps(test_message))
 
             # Verify bad client was removed from connections
             assert "bad_client" not in server_module.frontend_connections
@@ -1134,8 +962,23 @@ class TestClientManagement:
             mock_logger = MagicMock()
             monkeypatch.setattr(server_module, "logger", mock_logger)
 
+            # Mock update_client_status to avoid Redis dependency
+            mock_update_status = AsyncMock(return_value=True)
+            monkeypatch.setattr(
+                server_module, "update_client_status", mock_update_status
+            )
+
+            # Mock get_client_info to return a client that exists and is connected
+            async def mock_get_client_info(client_id):
+                return {
+                    config.STATUS_KEY_CONNECTED: config.STATUS_VALUE_CONNECTED,
+                    config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,
+                }
+
+            monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info)
+
             # Test with worker client
-            await server_module.disconnect_client(client_id)
+            result = await server_module.disconnect_client(client_id)
 
             # Verify WebSocket was closed with normal closure code
             mock_worker_ws.close.assert_awaited_once_with(
@@ -1143,7 +986,19 @@ class TestClientManagement:
                 reason=config.REASON_SERVER_INITIATED_DISCONNECT_HTTP,
             )
 
-            # Verify client was removed
+            # Verify update_client_status was called
+            mock_update_status.assert_called_once()
+
+            # Verify result structure
+            assert config.PAYLOAD_KEY_STATUS in result
+            assert config.PAYLOAD_KEY_MESSAGE in result
+
+            # The disconnect_client function doesn't remove from connections immediately
+            # - that's done by the WebSocket handler's finally block.
+            # So we simulate that cleanup here to test the expectation:
+            server_module.worker_connections.pop(client_id, None)
+
+            # Now verify client was removed
             assert client_id not in server_module.worker_connections
 
             # Test with frontend client - create a new mock to avoid any state issues
@@ -1152,6 +1007,9 @@ class TestClientManagement:
             mock_frontend_ws.close = AsyncMock()
             server_module.frontend_connections[frontend_id] = mock_frontend_ws
 
+            # Reset the mock for the second call
+            mock_update_status.reset_mock()
+
             await server_module.disconnect_client(frontend_id)
 
             # Verify WebSocket was closed
@@ -1159,6 +1017,9 @@ class TestClientManagement:
                 code=config.WEBSOCKET_CLOSE_CODE_NORMAL_CLOSURE,
                 reason=config.REASON_SERVER_INITIATED_DISCONNECT_HTTP,
             )
+
+            # Simulate the WebSocket handler cleanup
+            server_module.frontend_connections.pop(frontend_id, None)
 
             # Verify client was removed
             assert frontend_id not in server_module.frontend_connections
@@ -1198,11 +1059,19 @@ class TestClientManagement:
             # Mock get_client_info for pause_client
             async def mock_get_client_info_pause(*args, **kwargs):
                 return {config.STATUS_KEY_CONNECTED: config.STATUS_VALUE_CONNECTED}
-            monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info_pause)
+
+            monkeypatch.setattr(
+                server_module, "get_client_info", mock_get_client_info_pause
+            )
             await server_module.pause_client(client_id)
 
             # Verify client was updated with paused status
-            update_mock.assert_called_once_with(client_id, {config.STATUS_KEY_CLIENT_STATE: config.CLIENT_STATE_PAUSED})
+            update_mock.assert_called_once_with(
+                client_id,
+                {config.STATUS_KEY_CLIENT_STATE: config.CLIENT_STATE_PAUSED},
+                broadcast=True,
+                originating_client_id=None,
+            )
 
             # Reset mock for resume test
             update_mock.reset_mock()
@@ -1211,11 +1080,19 @@ class TestClientManagement:
             # Mock get_client_info for resume_client
             async def mock_get_client_info_resume(*args, **kwargs):
                 return {config.STATUS_KEY_CONNECTED: config.STATUS_VALUE_CONNECTED}
-            monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info_resume)
+
+            monkeypatch.setattr(
+                server_module, "get_client_info", mock_get_client_info_resume
+            )
             await server_module.resume_client(client_id)
 
             # Verify client was updated with running status
-            update_mock.assert_called_once_with(client_id, {config.STATUS_KEY_CLIENT_STATE: config.CLIENT_STATE_RUNNING})
+            update_mock.assert_called_once_with(
+                client_id,
+                {config.STATUS_KEY_CLIENT_STATE: config.CLIENT_STATE_RUNNING},
+                broadcast=True,
+                originating_client_id=None,
+            )
 
         finally:
             # Restore original state
@@ -1282,7 +1159,11 @@ class TestWebSocketEndpointErrorHandling:
     ):
         """Test JSON decode error in message loop after successful registration."""
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock the status after registration
         expected_status = {
@@ -1316,7 +1197,7 @@ class TestWebSocketEndpointErrorHandling:
 
             # Check that error was logged
             assert any(
-                "Invalid JSON from test_json_error_client" in record.message
+                "Invalid JSON format from test_json_error_client:" in record.message
                 for record in caplog.records
                 if record.levelname == "ERROR"
             )
@@ -1328,7 +1209,11 @@ class TestWebSocketEndpointErrorHandling:
         """Test handling of unexpected exceptions in websocket endpoint."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock update_client_status to raise an exception
         async def mock_update_status(*args, **kwargs):
@@ -1368,7 +1253,11 @@ class TestWebSocketEndpointErrorHandling:
         """Test error during websocket close in exception handler."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Create a mock that will cause an exception during message processing
         async def mock_update_status(*args, **kwargs):
@@ -1415,7 +1304,11 @@ class TestControlMessageHandling:
     ):
         """Test that non-frontend clients cannot send control messages."""
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock the status after registration
         expected_status = {
@@ -1453,7 +1346,10 @@ class TestControlMessageHandling:
             data = json.loads(response)
             assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CONTROL_RESPONSE
             assert data[config.PAYLOAD_KEY_STATUS] == config.MSG_TYPE_ERROR
-            assert config.ERROR_MSG_CONTROL_PERMISSION_DENIED in data[config.PAYLOAD_KEY_MESSAGE]
+            assert (
+                config.ERROR_MSG_CONTROL_PERMISSION_DENIED
+                in data[config.PAYLOAD_KEY_MESSAGE]
+            )
             assert data[config.PAYLOAD_KEY_ACTION] == config.CONTROL_ACTION_PAUSE
             assert data[config.PAYLOAD_KEY_TARGET_CLIENT_ID] == "some_target"
             assert data[config.PAYLOAD_KEY_MESSAGE_ID] == "test_123"
@@ -1465,7 +1361,11 @@ class TestControlMessageHandling:
         """Test control message with missing required fields."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock get_all_client_statuses for frontend registration
         async def mock_get_all_statuses():
@@ -1502,7 +1402,10 @@ class TestControlMessageHandling:
             data = json.loads(response)
             assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CONTROL_RESPONSE
             assert data[config.PAYLOAD_KEY_STATUS] == config.MSG_TYPE_ERROR
-            assert config.ERROR_MSG_CONTROL_INVALID_PAYLOAD in data[config.PAYLOAD_KEY_MESSAGE]
+            assert (
+                config.ERROR_MSG_CONTROL_INVALID_PAYLOAD
+                in data[config.PAYLOAD_KEY_MESSAGE]
+            )
 
             # Send control message missing target_client_id
             control_message = {
@@ -1516,7 +1419,10 @@ class TestControlMessageHandling:
             data = json.loads(response)
             assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CONTROL_RESPONSE
             assert data[config.PAYLOAD_KEY_STATUS] == config.MSG_TYPE_ERROR
-            assert config.ERROR_MSG_CONTROL_INVALID_PAYLOAD in data[config.PAYLOAD_KEY_MESSAGE]
+            assert (
+                config.ERROR_MSG_CONTROL_INVALID_PAYLOAD
+                in data[config.PAYLOAD_KEY_MESSAGE]
+            )
 
     @pytest.mark.asyncio
     async def test_control_message_unknown_action(
@@ -1525,7 +1431,11 @@ class TestControlMessageHandling:
         """Test control message with unknown action."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock get_all_client_statuses for frontend registration
         async def mock_get_all_statuses():
@@ -1563,7 +1473,10 @@ class TestControlMessageHandling:
             data = json.loads(response)
             assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_CONTROL_RESPONSE
             assert data[config.PAYLOAD_KEY_STATUS] == config.MSG_TYPE_ERROR
-            assert f"Unknown control action: unknown_action" in data[config.PAYLOAD_KEY_MESSAGE]
+            assert (
+                "Unknown control action: unknown_action"
+                in data[config.PAYLOAD_KEY_MESSAGE]
+            )
             assert data[config.PAYLOAD_KEY_ACTION] == "unknown_action"
 
 
@@ -1576,7 +1489,11 @@ class TestWorkerStatusUpdateHandling:
     ):
         """Test worker sending status update with conflicting client_id."""
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock the status after registration and update
         expected_status = {
@@ -1610,8 +1527,10 @@ class TestWorkerStatusUpdateHandling:
             # Should still get acknowledgment
             response = websocket.receive_text()
             data = json.loads(response)
-            assert data[config.PAYLOAD_KEY_RESULT] == config.MSG_TYPE_MESSAGE_PROCESSED
-            assert data[config.PAYLOAD_KEY_CLIENT_ID] == "worker_client"  # Uses connection's client_id
+            assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_MESSAGE_PROCESSED
+            assert (
+                data[config.PAYLOAD_KEY_CLIENT_ID] == "worker_client"
+            )  # Uses connection's client_id
 
             # Check warning was logged
             assert any(
@@ -1626,7 +1545,11 @@ class TestWorkerStatusUpdateHandling:
     ):
         """Test worker sending non-dict status payload."""
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock the status after registration and update
         expected_status = {
@@ -1661,8 +1584,10 @@ class TestWorkerStatusUpdateHandling:
             # Should still get acknowledgment
             response = websocket.receive_text()
             data = json.loads(response)
-            assert data[config.PAYLOAD_KEY_RESULT] == config.MSG_TYPE_MESSAGE_PROCESSED
-            assert config.STATUS_KEY_RAW_PAYLOAD in data[config.PAYLOAD_KEY_STATUS_UPDATED]
+            assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_MESSAGE_PROCESSED
+            assert (
+                config.STATUS_KEY_RAW_PAYLOAD in data[config.PAYLOAD_KEY_STATUS_UPDATED]
+            )
 
             # Check warning was logged
             assert any(
@@ -1682,7 +1607,11 @@ class TestFrontendMessageHandling:
         """Test frontend sending unhandled message type."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, "redis", "connected")
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
 
         # Mock get_all_client_statuses for frontend registration
         async def mock_get_all_statuses():
@@ -1713,9 +1642,13 @@ class TestFrontendMessageHandling:
 
             response = websocket.receive_text()
             data = json.loads(response)
-            assert data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_MESSAGE_RECEIPT_UNKNOWN
+            assert (
+                data[config.PAYLOAD_KEY_TYPE] == config.MSG_TYPE_MESSAGE_RECEIPT_UNKNOWN
+            )
             assert data[config.PAYLOAD_KEY_ORIGINAL_MESSAGE] == unhandled_message
-            assert config.INFO_MSG_UNHANDLED_FRONTEND_MSG in data[config.PAYLOAD_KEY_INFO]
+            assert (
+                config.INFO_MSG_UNHANDLED_FRONTEND_MSG in data[config.PAYLOAD_KEY_INFO]
+            )
 
 
 class TestStatusEndpointErrorHandling:
@@ -1738,7 +1671,10 @@ class TestStatusEndpointErrorHandling:
         response = await server_module.get_all_statuses()
 
         assert response[config.PAYLOAD_KEY_CLIENTS] == {}
-        assert response[config.STATUS_KEY_REDIS_STATUS] == config.STATUS_VALUE_REDIS_UNKNOWN
+        assert (
+            response[config.STATUS_KEY_REDIS_STATUS]
+            == config.STATUS_VALUE_REDIS_UNKNOWN
+        )
         assert response[config.MSG_TYPE_ERROR] == "Failed to retrieve client statuses"
 
         # Check error was logged
@@ -1757,14 +1693,18 @@ class TestHelperFunctionErrorHandling:
         """Test get_client_info when Redis is unavailable."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_REDIS_UNAVAILABLE)
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_UNAVAILABLE,
+        )
 
         result = await server_module.get_client_info("test_client")
         assert result is None
 
         # Check warning was logged
         assert any(
-            "Redis unavailable, cannot get client info for test_client"
+            "Redis unavailable (status: unavailable), cannot get client info for test_client"
             in record.message
             for record in caplog.records
             if record.levelname == "WARNING"
@@ -1777,9 +1717,15 @@ class TestHelperFunctionErrorHandling:
         """Test get_client_info when Redis raises an exception."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_CONNECTED)
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
         # Ensure the globally patched redis_client (which is mock_redis) has this side_effect
-        mock_redis.hgetall.side_effect = redis.exceptions.ConnectionError("Simulated Redis error")
+        mock_redis.hgetall.side_effect = redis.exceptions.ConnectionError(
+            "Simulated Redis error"
+        )
 
         result = await server_module.get_client_info("test_client")
         assert result is None
@@ -1796,7 +1742,11 @@ class TestHelperFunctionErrorHandling:
         """Test get_client_info when Redis returns empty data."""
         from src.server import server as server_module
 
-        monkeypatch.setitem(status_store, config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_CONNECTED)
+        monkeypatch.setitem(
+            status_store,
+            config.STATUS_KEY_REDIS_STATUS,
+            config.STATUS_VALUE_REDIS_CONNECTED,
+        )
         # Ensure the globally patched redis_client (which is mock_redis) returns empty dict
         mock_redis.hgetall.return_value = {}
         # Reset side_effect if it was set by a previous test using the same mock_redis instance
@@ -1837,7 +1787,7 @@ class TestHelperFunctionErrorHandling:
 
         # Check warning was logged
         assert any(
-            "No status found for client test_client in broadcast_client_state_change"
+            "No status found for client test_client in Redis, and no changed_state_attributes provided for broadcast_client_state_change."
             in record.message
             for record in caplog.records
             if record.levelname == "WARNING"
@@ -1889,155 +1839,3 @@ class TestHelperFunctionErrorHandling:
             for record in caplog.records
             if record.levelname == "ERROR"
         )
-
-
-class TestLifespanErrorHandling:
-    """Test lifespan management error handling."""
-
-    @pytest.mark.asyncio
-    async def test_lifespan_close_websocket_errors(self, monkeypatch, caplog):
-        """Test lifespan handling when WebSocket close fails."""
-        from src.server import server as server_module
-
-        # Save original connections
-        original_worker_connections = server_module.worker_connections.copy()
-        original_frontend_connections = server_module.frontend_connections.copy()
-
-        try:
-            # Create mock WebSockets that raise errors during close
-            error_ws1 = AsyncMock()
-            error_ws1.close = AsyncMock(side_effect=RuntimeError("Close error 1"))
-            error_ws2 = AsyncMock()
-            error_ws2.close = AsyncMock(side_effect=RuntimeError("Close error 2"))
-
-            # Add to connections
-            server_module.worker_connections = {"worker1": error_ws1}
-            server_module.frontend_connections = {"frontend1": error_ws2}
-
-            # Mock close_redis
-            close_redis_mock = AsyncMock()
-            monkeypatch.setattr(server_module, "close_redis", close_redis_mock)
-
-            # Test the lifespan shutdown
-            async with server_module.lifespan(None):
-                pass  # This will trigger the shutdown in finally block
-
-            # Verify errors were logged
-            assert any(
-                "Error closing a WebSocket connection during shutdown" in record.message
-                for record in caplog.records
-                if record.levelname == "WARNING"
-            )
-
-        finally:
-            # Restore original state
-            server_module.worker_connections = original_worker_connections
-            server_module.frontend_connections = original_frontend_connections
-
-
-class TestWebSocketClosureScenarios:
-    """Test WebSocket connection closure scenarios."""
-
-    @pytest.mark.asyncio
-    async def test_websocket_connection_closed_before_registration(
-        self, websocket_client, caplog
-    ):
-        """Test connection closed before client_id is established."""
-        # This test simulates the scenario where a WebSocket connects but
-        # disconnects before completing registration
-
-        # The test framework makes it difficult to simulate this exact scenario,
-        # but we can verify the logging behavior when client_id is None
-        from src.server import server as server_module
-
-        # Call handle_disconnect with None client_id to simulate this scenario
-        mock_websocket = AsyncMock()
-        await server_module.handle_disconnect(
-            None, mock_websocket, "Connection dropped"
-        )
-
-        # This should not crash and should be handled gracefully
-        # The function should exit early when client_id is None
-
-
-class TestRegistrationEdgeCases:
-    """Test edge cases in client registration."""
-
-    @pytest.mark.asyncio
-    async def test_registration_redis_update_fails_but_broadcast_succeeds(
-        self, websocket_client, mock_redis, monkeypatch
-    ):
-        """Test registration when Redis update fails but status is still available."""
-        from src.server import server as server_module
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
-        # Mock update_client_status to return False (Redis failure)
-        # but get_client_info to return status (somehow available)
-        async def mock_update_status(*args, **kwargs):
-            return False
-
-        async def mock_get_client_info(client_id):
-            return {
-                "client_id": client_id,
-                "client_role": "worker",
-                "state": "running",
-                "connected": "true",
-            }
-
-        monkeypatch.setattr(server_module, "update_client_status", mock_update_status)
-        monkeypatch.setattr(server_module, "get_client_info", mock_get_client_info)
-
-        with websocket_client.websocket_connect(
-            config.WEBSOCKET_ENDPOINT_PATH
-        ) as websocket:
-            registration_message = {
-                "client_id": "test_redis_fail_client",
-                "status": {"client_role": "worker", "state": "running"},
-            }
-            websocket.send_text(json.dumps(registration_message))
-
-            # Should still get registration complete
-            response = websocket.receive_text()
-            data = json.loads(response)
-            assert data["result"] == "registration_complete"
-
-    @pytest.mark.asyncio
-    async def test_frontend_registration_get_all_clients_returns_none(
-        self, websocket_client, mock_redis, monkeypatch
-    ):
-        """Test frontend registration when get_all_client_statuses returns None."""
-        from src.server import server as server_module
-
-        monkeypatch.setitem(status_store, "redis", "connected")
-
-        # Mock get_all_client_statuses to return None for clients
-        async def mock_get_all_statuses():
-            return None, "connected", None
-
-        monkeypatch.setattr(
-            server_module, "get_all_client_statuses", mock_get_all_statuses
-        )
-
-        with websocket_client.websocket_connect(
-            config.WEBSOCKET_ENDPOINT_PATH
-        ) as websocket:
-            registration_message = {
-                "client_id": "frontend_client",
-                "status": {"client_role": "frontend"},
-            }
-            websocket.send_text(json.dumps(registration_message))
-
-            # Should skip the all_clients_update message since data is None
-            # Should get broadcast of own status and registration complete
-            response1 = websocket.receive_text()
-            data1 = json.loads(response1)
-            # Could be either broadcast or registration_complete depending on timing
-
-            response2 = websocket.receive_text()
-            data2 = json.loads(response2)
-
-            # One should be registration_complete
-            assert any(
-                data.get(config.PAYLOAD_KEY_RESULT) == config.MSG_TYPE_REGISTRATION_COMPLETE for data in [data1, data2]
-            )

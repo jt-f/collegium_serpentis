@@ -2,11 +2,12 @@
 
 import asyncio
 import random
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import redis
 
+from src.server import config
 from src.shared.utils.config import REDIS_CONFIG
 from src.shared.utils.logging import get_logger
 
@@ -17,7 +18,9 @@ logger = get_logger(__name__)
 redis_client = redis.asyncio.Redis(**REDIS_CONFIG)
 
 # Status store to track service health
-status_store: dict[str, str] = {"redis": "unknown"}
+status_store: dict[str, str] = {
+    config.STATUS_KEY_REDIS_STATUS: config.STATUS_VALUE_REDIS_UNKNOWN
+}
 
 
 async def redis_health_check() -> None:
@@ -30,23 +33,30 @@ async def redis_health_check() -> None:
     while True:
         await asyncio.sleep(check_interval)
 
-        if status_store["redis"] != "connected":
+        if (
+            status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+        ):
             continue
 
         try:
             await asyncio.wait_for(redis_client.ping(), timeout=1.0)
         except (TimeoutError, redis.ConnectionError) as e:
-            old_status = status_store["redis"]
-            status_store["redis"] = "unavailable"
+            old_status = status_store[config.STATUS_KEY_REDIS_STATUS]
+            status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
             logger.error(
                 "Redis connection lost",
                 error=str(e),
                 previous_status=old_status,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
             )
         except Exception as e:
-            old_status = status_store["redis"]
-            status_store["redis"] = "unavailable"
+            old_status = status_store[config.STATUS_KEY_REDIS_STATUS]
+            status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
             logger.error(
                 "Redis health check failed",
                 error=str(e),
@@ -63,18 +73,25 @@ async def redis_reconnector() -> None:
     while True:
         await asyncio.sleep(current_delay)
 
-        if status_store["redis"] == "connected":
+        if (
+            status_store[config.STATUS_KEY_REDIS_STATUS]
+            == config.STATUS_VALUE_REDIS_CONNECTED
+        ):
             current_delay = base_delay
             continue
 
         try:
             logger.debug("Attempting to reconnect to Redis", delay=current_delay)
             await redis_client.ping()
-            status_store["redis"] = "connected"
+            status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_CONNECTED
+            )
             logger.info("Reconnected to Redis")
             current_delay = base_delay
         except redis.ConnectionError as e:
-            status_store["redis"] = "unavailable"
+            status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
             logger.error(
                 "Redis still unavailable",
                 error=str(e),
@@ -83,7 +100,9 @@ async def redis_reconnector() -> None:
             current_delay = min(current_delay * 2, max_delay)
             current_delay = current_delay * (0.8 + 0.4 * random.random())
         except Exception as e:
-            status_store["redis"] = "unavailable"
+            status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
             logger.error(
                 "Redis still unavailable (UnknownError)",
                 error=str(e),
@@ -101,7 +120,10 @@ async def update_client_status(
 
     processed_attributes = {str(k): str(v) for k, v in status_attributes.items()}
 
-    if status_store["redis"] != "connected":
+    if (
+        status_store[config.STATUS_KEY_REDIS_STATUS]
+        != config.STATUS_VALUE_REDIS_CONNECTED
+    ):
         logger.warning(
             "Redis unavailable, cannot update client status for %s",
             client_id,
@@ -117,7 +139,9 @@ async def update_client_status(
         )
         return True
     except (TimeoutError, redis.ConnectionError) as e:
-        status_store["redis"] = "unavailable"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
         logger.error(
             "Redis connection failed during status update for %s",
             client_id,
@@ -137,10 +161,13 @@ async def perform_cleanup_cycle():
     """Perform one cycle of client cleanup. This function can be tested directly."""
     max_disconnect_duration = 60  # 1 minute in seconds
     logger.debug("Running cleanup for disconnected clients...")
-    current_time = datetime.now(timezone.utc)
+    current_time = datetime.now(UTC)
     clients_to_delete = []
 
-    if status_store["redis"] != "connected":
+    if (
+        status_store[config.STATUS_KEY_REDIS_STATUS]
+        != config.STATUS_VALUE_REDIS_CONNECTED
+    ):
         logger.warning("Redis unavailable, skipping cleanup cycle.")
         return
 
@@ -182,7 +209,9 @@ async def perform_cleanup_cycle():
 
     except redis.RedisError as e:
         logger.error(f"Redis error during client cleanup: {e}")
-        status_store["redis"] = "unavailable"  # Mark Redis as unavailable
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )  # Mark Redis as unavailable
     except Exception as e:
         logger.error(f"Unexpected error during Redis client cleanup: {e}")
 
@@ -205,16 +234,21 @@ async def get_all_client_statuses() -> (
     Fetch all client statuses from Redis.
 
     Returns:
-        tuple: (statuses, data_source, error_msg)
+        tuple: (statuses, redis_status, error_msg)
     """
     statuses: dict[str, dict[str, str]] = {}
     error_msg: str | None = None
-    data_source = "redis"
+    redis_status = status_store.get(
+        config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_REDIS_UNKNOWN
+    )
 
-    if status_store["redis"] != "connected":
+    if (
+        status_store[config.STATUS_KEY_REDIS_STATUS]
+        != config.STATUS_VALUE_REDIS_CONNECTED
+    ):
         error_msg = "Redis is unavailable."
         logger.warning("Cannot fetch client statuses: Redis unavailable.")
-        return statuses, "error", error_msg
+        return statuses, redis_status, error_msg
 
     try:
         async for key_b in redis_client.scan_iter("client:*:status"):
@@ -233,30 +267,39 @@ async def get_all_client_statuses() -> (
             "Failed to fetch client statuses from Redis (Connection Error)",
             error=error_msg,
         )
-        status_store["redis"] = "unavailable"
-        data_source = "error"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
+        redis_status = config.STATUS_VALUE_REDIS_UNAVAILABLE
     except redis.RedisError as e:
         error_msg = str(e)
         logger.error(
             "Failed to fetch client statuses from Redis (RedisError)", error=error_msg
         )
-        status_store["redis"] = "unavailable"
-        data_source = "error"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
+        redis_status = config.STATUS_VALUE_REDIS_UNAVAILABLE
     except Exception as e:
         error_msg = str(e)
         logger.error(
             "Failed to fetch client statuses from Redis (Unknown Error)",
             error=error_msg,
         )
-        status_store["redis"] = "unavailable"
-        data_source = "error"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
+        redis_status = config.STATUS_VALUE_REDIS_UNAVAILABLE
 
-    return statuses, data_source, error_msg
+    return statuses, redis_status, error_msg
 
 
 async def get_client_info(client_id: str) -> dict[str, str] | None:
     """Get client info from Redis."""
-    if status_store["redis"] != "connected":
+    if (
+        status_store[config.STATUS_KEY_REDIS_STATUS]
+        != config.STATUS_VALUE_REDIS_CONNECTED
+    ):
         logger.warning(f"Cannot get client info for {client_id}: Redis unavailable.")
         return None
 
@@ -267,7 +310,9 @@ async def get_client_info(client_id: str) -> dict[str, str] | None:
             return {k.decode(): v.decode() for k, v in client_info_redis_raw.items()}
         return None
     except (TimeoutError, redis.ConnectionError) as e:
-        status_store["redis"] = "unavailable"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
         logger.warning(
             f"Could not retrieve client {client_id} status from Redis (Connection Error): {e}"
         )
@@ -288,22 +333,30 @@ async def initialize_redis() -> None:
     """Initialize Redis connection and set status."""
     try:
         await redis_client.ping()
-        status_store["redis"] = "connected"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_CONNECTED
+        )
         logger.info("Successfully connected to Redis")
     except redis.ConnectionError as e:
-        status_store["redis"] = "unavailable"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
         logger.error(
             "Failed to connect to Redis",
             error=str(e),
         )
     except redis.RedisError as e:
-        status_store["redis"] = "unavailable"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
         logger.error(
             "Failed to connect to Redis",
             error=str(e),
         )
     except Exception as e:
-        status_store["redis"] = "unavailable"
+        status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
         logger.error(
             "Failed to connect to Redis (UnknownError)",
             error=str(e),
