@@ -186,7 +186,10 @@ function App() {
                 setIsLoading(true);
             }
             try {
-                const response = await fetch('/api/v1/statuses');
+                const apiUrl = process.env.NODE_ENV === 'development'
+                    ? `http://${window.location.hostname}:8000/statuses`
+                    : `/statuses`;
+                const response = await fetch(apiUrl);
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -204,7 +207,7 @@ function App() {
             } catch (e) {
                 console.error("Failed to fetch client statuses (HTTP poll):", e);
                 if (wsStatus !== 'connected') {
-                    setError(e.message);
+                    setError(`Could not load system status: ${e.message}`);
                     if (isLoading) setIsLoading(false);
                 }
             }
