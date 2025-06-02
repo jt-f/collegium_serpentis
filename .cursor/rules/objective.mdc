@@ -44,4 +44,4 @@ Error Handling and Logging: Comprehensive error handling on both client and serv
 
 # Guidelines
 
-- Be sure to write code that will pass black and flake8 tests
+- Be sure to write code that will passisort, black and ruff tests
