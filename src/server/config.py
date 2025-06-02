@@ -63,10 +63,13 @@ STATUS_KEY_CONNECT_TIME = "connect_time"
 STATUS_KEY_LAST_SEEN = "last_seen"
 STATUS_KEY_DISCONNECT_TIME = "disconnect_time"
 STATUS_KEY_CLIENT_ROLE = "client_role"
+STATUS_KEY_CLIENT_TYPE = "client_type"
+STATUS_KEY_CLIENT_NAME = "client_name"
 STATUS_KEY_REDIS_STATUS = "redis_status"
 STATUS_KEY_STATUS_DETAIL = "status_detail"
 STATUS_KEY_CLIENT_STATE = "client_state"
 STATUS_KEY_RAW_PAYLOAD = "raw_payload"
+STATUS_KEY_UPDATE_STATUS = "update_status"
 
 # --- Common Status Values ---
 STATUS_VALUE_CONNECTED = "true"
@@ -76,20 +79,44 @@ STATUS_VALUE_REDIS_UNAVAILABLE = "unavailable"
 STATUS_VALUE_REDIS_UNKNOWN = "unknown"
 # Note: "connected" for redis_status usually comes from status_store
 
-CLIENT_STATE_OFFLINE = "offline"
-CLIENT_STATE_PAUSED = "paused"
+# --- Client States ---
+CLIENT_STATE_INITIALIZING = "initializing"
 CLIENT_STATE_RUNNING = "running"
+CLIENT_STATE_PAUSED = "paused"
+CLIENT_STATE_OFFLINE = "offline"
+CLIENT_STATE_DORMANT = "dormant"
 
 # --- WebSocket Message Types ---
-MSG_TYPE_ALL_CLIENTS_UPDATE = "all_clients_update"
-MSG_TYPE_CLIENT_STATUS_UPDATE = "client_status_update"
-MSG_TYPE_REGISTRATION_COMPLETE = "registration_complete"
-MSG_TYPE_CONTROL = "control"
-MSG_TYPE_CONTROL_RESPONSE = "control_response"
-MSG_TYPE_MESSAGE_PROCESSED = "message_processed"
-MSG_TYPE_MESSAGE_RECEIPT_UNKNOWN = "message_receipt_unknown"
-# Specific to server.py internal logic, not part of client-server message spec as such
-MSG_TYPE_ERROR = "error"  # For generic error messages in responses
+# Standardized message type constants
+MSG_TYPE_ALL_CLIENTS_UPDATE = (
+    "all_clients_update"  # Server -> Frontend: Full list of clients
+)
+MSG_TYPE_CLIENT_STATUS_UPDATE = (
+    "client_status_update"  # Server -> Frontend: Single client status changed
+)
+MSG_TYPE_REGISTRATION_COMPLETE = (
+    "registration_complete"  # Server -> Client: Registration ACK
+)
+MSG_TYPE_CONTROL = (
+    "control"  # Frontend -> Server: Command for a worker (pause, resume, disconnect)
+)
+MSG_TYPE_CONTROL_RESPONSE = (
+    "control_response"  # Server -> Frontend: ACK for a control command
+)
+MSG_TYPE_MESSAGE_PROCESSED = (
+    "message_processed"  # Server -> Worker: ACK for status update received
+)
+MSG_TYPE_MESSAGE_RECEIPT_UNKNOWN = "message_receipt_unknown"  # Server -> Client: If server doesn't understand a message
+MSG_TYPE_ERROR = "error"  # Server -> Client: Generic error message
+MSG_TYPE_SYSTEM = "system_message"  # Server -> Client: General system info/broadcast
+
+# Message types primarily initiated by clients
+MSG_TYPE_REGISTER = "register"  # Client -> Server: Initial registration message
+MSG_TYPE_STATUS = (
+    "status_update"  # Worker -> Server: Regular status update from a worker client
+)
+MSG_TYPE_COMMAND = "command"  # Server -> Worker: A command for the worker to execute (distinct from control)
+MSG_TYPE_HEARTBEAT = "heartbeat"  # Frontend -> Server: Heartbeat message from frontend
 
 # --- Control Actions ---
 CONTROL_ACTION_PAUSE = "pause"
@@ -125,8 +152,8 @@ STATIC_FILES_NAME = "static-frontend"
 # --- Default Messages & Reasons ---
 REASON_SERVER_SHUTDOWN = "Server shutting down"
 REASON_DISCONNECTED_BY_CLIENT = "Disconnected by client"
-REASON_SERVER_INITIATED_DISCONNECT_HTTP = "Server initiated disconnect via HTTP"
-STATUS_DETAIL_DISCONNECTED_BY_SERVER_HTTP = "Disconnected by server request (HTTP)"
+REASON_SERVER_INITIATED_DISCONNECT = "Server initiated disconnect"
+STATUS_DETAIL_DISCONNECTED_BY_SERVER = "Disconnected by server request"
 
 ERROR_MSG_INVALID_JSON_REGISTRATION = "Invalid JSON format for registration"
 ERROR_MSG_REGISTRATION_MISSING_IDS = (

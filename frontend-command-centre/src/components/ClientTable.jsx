@@ -167,7 +167,17 @@ const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus
   const clientList = Object.entries(clients || {}).map(([id, data]) => ({
     ...data,
     client_id: id
-  }));
+  })).sort((a, b) => {
+    // Handle cases where last_seen might be missing or invalid to prevent runtime errors
+    const dateA = a.last_seen ? new Date(a.last_seen) : new Date(0); // Fallback to epoch if missing
+    const dateB = b.last_seen ? new Date(b.last_seen) : new Date(0); // Fallback to epoch if missing
+
+    // Check for invalid dates after parsing
+    if (isNaN(dateA.getTime())) return 1; // Push items with invalid dates to the end
+    if (isNaN(dateB.getTime())) return -1;
+
+    return dateB - dateA; // Sorts in descending order (most recent first)
+  });
 
   if (clientList.length === 0) {
     return (
@@ -179,11 +189,11 @@ const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus
   }
 
   return (
-    <div className="bg-slate-800 p-6 rounded-xl shadow-xl flex-grow flex flex-col min-h-[400px]">
+    <div className="bg-slate-800 p-6 rounded-xl shadow-xl flex flex-col h-[61.8vh]">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-2xl font-semibold text-purple-400">Registered Clients</h2>
       </div>
-      <div className="overflow-x-auto flex-grow rounded-lg scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-700">
+      <div className="overflow-x-auto overflow-y-auto flex-grow rounded-lg scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-700">
         <table className="min-w-full divide-y divide-slate-700 border border-slate-600 rounded-lg overflow-hidden">
           <thead className="bg-slate-700/70 sticky top-0 z-10">
             <tr>

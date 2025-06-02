@@ -53,19 +53,38 @@ function App() {
             console.log("WebSocket connected successfully to:", WS_URL);
             setWsStatus('connected');
             setError(null);
+
+            // Clear any existing reconnect interval if connection is successful
             if (reconnectInterval.current) {
                 clearInterval(reconnectInterval.current);
                 reconnectInterval.current = null;
             }
+
             ws.send(JSON.stringify({
                 client_id: frontendClientId.current,
+                type: "register",
                 status: {
                     client_name: frontendClientName.current,
                     client_role: "frontend",
                     client_type: "react_dashboard",
-                    connected_at: new Date().toISOString(),
+                    client_state: "running",
+                    client_registration_timestamp: new Date().toISOString(),
                 }
             }));
+
+            // Start sending heartbeats
+            // Ensure only one heartbeat interval is active
+            if (ws.heartbeatInterval) clearInterval(ws.heartbeatInterval);
+            ws.heartbeatInterval = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    console.log("Sending frontend heartbeat");
+                    ws.send(JSON.stringify({
+                        type: "heartbeat",
+                        client_id: frontendClientId.current,
+                        timestamp: new Date().toISOString()
+                    }));
+                }
+            }, 30000); // Send heartbeat every 30 seconds
         };
 
         ws.onmessage = (event) => {
@@ -144,14 +163,26 @@ function App() {
         };
 
         ws.onclose = (event) => {
-            console.log(`WebSocket disconnected: ${event.code} - ${event.reason}`);
+            console.warn("WebSocket disconnected:", event.code, event.reason);
             setWsStatus('disconnected');
-            websocket.current = null;
-            if (!reconnectInterval.current && event.code !== 1000) {
+
+            // Stop heartbeats
+            if (ws.heartbeatInterval) {
+                clearInterval(ws.heartbeatInterval);
+                ws.heartbeatInterval = null;
+            }
+
+            // Attempt to reconnect if not a clean close and no reconnect interval is already set
+            if (event.code !== 1000 && !reconnectInterval.current) {
                 console.log("Attempting to reconnect WebSocket in 5 seconds...");
                 reconnectInterval.current = setInterval(() => {
                     console.log("Retrying WebSocket connection...");
-                    connectWebSocket(); // This call within onclose is for retries
+                    // No need to call connectWebSocket() directly if it's handled by useEffect dependency
+                    // Forcing a re-render or state change that triggers useEffect might be cleaner
+                    // However, for simplicity here, explicitly calling it, ensuring connectWebSocket is stable
+                    if (!websocket.current || websocket.current.readyState === WebSocket.CLOSED) {
+                        connectWebSocket();
+                    }
                 }, 5000);
             }
         };

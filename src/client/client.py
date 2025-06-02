@@ -60,6 +60,7 @@ def get_current_status_payload() -> dict:
 async def send_registration_message(websocket):
     """Sends the initial registration message to the server."""
     registration_payload = {
+        "type": "register",
         "client_id": CLIENT_ID,
         "status": {
             "client_role": CLIENT_ROLE,
@@ -78,7 +79,11 @@ async def send_status_message(websocket, status_attributes: dict):
     is_disconnect_ack = status_attributes.get("acknowledged_command") == "disconnect"
     if manual_disconnect_initiated and not is_disconnect_ack:
         return
-    message = {"client_id": CLIENT_ID, "status": status_attributes}
+    message = {
+        "type": "status_update",
+        "client_id": CLIENT_ID,
+        "status": status_attributes,
+    }
     await websocket.send(json.dumps(message))
     logger.info(f"Sent message: {message}")
 
@@ -111,6 +116,16 @@ async def listen_for_commands(websocket):
                         f"Client {CLIENT_ID}: " f"Status update acknowledged by server"
                     )
                     continue
+
+                # Check if this is an error message from the server
+                error_content = message.get("error")
+                if error_content is not None:
+                    logger.error(
+                        f"Client {CLIENT_ID}: Received error message from server: '{error_content}'. "
+                        f"Initiating shutdown."
+                    )
+                    manual_disconnect_initiated = True
+                    return  # Exit listener task, gather will handle shutdown
 
                 # Check if this is an actual command message
                 command = message.get("command")
@@ -209,11 +224,18 @@ async def listen_for_commands(websocket):
         if (
             close_code == 1000
         ):  # Server initiated normal disconnect (e.g. after sending command)
-            logger.info(
-                f"Client {CLIENT_ID}: Server closed connection normally (code 1000). Signaling shutdown."
-            )
-            manual_disconnect_initiated = True  # Signal to not reconnect
-            # No need to raise ClientInitiatedDisconnect if flag handles it
+            if "Server initiated disconnect" in close_reason:
+                logger.info(
+                    f"Client {CLIENT_ID}: Server initiated disconnect (1000). "
+                    f"Not attempting to reconnect."
+                )
+                manual_disconnect_initiated = True  # Signal to not reconnect
+            else:
+                logger.info(
+                    f"Client {CLIENT_ID}: Server closed connection (1000). "
+                    f"Will attempt to reconnect."
+                )
+                # Standard delay will apply before reconnecting
         # For other close codes, the outer loop will handle reconnection attempts if flag not set.
         raise  # Re-raise to be caught by connect_and_send_updates to potentially retry
     except Exception as e:
@@ -257,13 +279,22 @@ async def connect_and_send_updates():
     global manual_disconnect_initiated, CLIENT_ID, CLIENT_NAME, is_paused
     delay = RECONNECT_DELAY  # Initial delay
 
+    print(
+        f"connect_and_send_updates() called. manual_disconnect_initiated={manual_disconnect_initiated}"
+    )
+
     while not manual_disconnect_initiated:
+        print(
+            f"Entering main loop iteration. manual_disconnect_initiated={manual_disconnect_initiated}"
+        )
         websocket = None  # Initialize websocket to None
         listener_task = None
         periodic_sender_task = None
         try:
+            print(f"About to call websockets.connect({SERVER_URL})")
             logger.info(f"Client {CLIENT_ID}: Attempting to connect to {SERVER_URL}...")
             websocket = await websockets.connect(SERVER_URL)
+            print("websockets.connect() succeeded")
             logger.info(f"Client {CLIENT_ID}: Connected to server.")
             delay = RECONNECT_DELAY  # Reset delay on successful connection
 
@@ -293,23 +324,41 @@ async def connect_and_send_updates():
 
             # Handle results/exceptions from tasks
             for task_result in task_results:
-                if isinstance(task_result, Exception):
+                if isinstance(task_result, ClientInitiatedDisconnect):
+                    logger.info(
+                        f"Client {CLIENT_ID}: "
+                        f"Client initiated disconnect processed by gather result."
+                    )
+                    manual_disconnect_initiated = True
+                elif isinstance(task_result, ConnectionClosed):
+                    # Re-raise ConnectionClosed to be handled by main exception handler
+                    # This allows 4008 (duplicate client ID) to trigger ID regeneration
+                    logger.info(
+                        f"Client {CLIENT_ID}: "
+                        f"ConnectionClosed from task, re-raising for main handler."
+                    )
+                    raise task_result
+                elif isinstance(task_result, BaseException):
                     exc = task_result
-                    if isinstance(exc, ClientInitiatedDisconnect):
-                        logger.info(
-                            f"Client {CLIENT_ID}: "
-                            f"Client initiated disconnect processed."
-                        )
-                        manual_disconnect_initiated = True  # Ensure flag is set
-                    elif isinstance(exc, ConnectionClosed):
-                        # This will be handled by the outer ConnectionClosed handler
-                        raise exc  # Re-raise to trigger specific handling
-                    else:
+                    # If any task (listener or sender) ends with any exception (including CancelledError from a task),
+                    # it usually means the session is not viable. Signal shutdown.
+                    if not isinstance(exc, asyncio.CancelledError) or (
+                        isinstance(exc, asyncio.CancelledError)
+                        and exc.__str__() != "Test sleep limit"
+                    ):
+                        # Log actual errors, but treat task cancellations also as a signal to stop,
+                        # unless it's the specific "Test sleep limit" from the test fixture which is a controlled stop for some tests.
                         logger.error(
                             f"Client {CLIENT_ID}: "
-                            f"Error in task: {exc}. Signaling shutdown."
+                            f"Exception in gathered task: {exc!r}. Signaling shutdown."
                         )
-                        manual_disconnect_initiated = True  # Signal shutdown
+                    else:
+                        logger.info(
+                            f"Client {CLIENT_ID}: Task cancelled: {exc!r}. Assuming part of controlled shutdown or test sequence."
+                        )
+                    manual_disconnect_initiated = (
+                        True  # Set flag for ANY exception/cancellation from tasks
+                    )
 
             # If manual_disconnect_initiated is True, break the loop after cleanup
             if manual_disconnect_initiated:
@@ -325,6 +374,11 @@ async def connect_and_send_updates():
         except ConnectionRefusedError:
             logger.warning(
                 f"Client {CLIENT_ID}: Connection refused. "
+                f"Retrying in {delay:.2f} seconds..."
+            )
+        except TimeoutError:  # Add specific handling for TimeoutError
+            logger.warning(
+                f"Client {CLIENT_ID}: Connection timed out during connect. "
                 f"Retrying in {delay:.2f} seconds..."
             )
         except ConnectionClosed as e:
@@ -348,10 +402,18 @@ async def connect_and_send_updates():
                 delay = 0  # Retry immediately
                 continue  # Skip sleep and retry connection immediately
             elif close_code == 1000:  # Normal closure by server
-                logger.info(
-                    f"Client {CLIENT_ID}: Server closed connection (1000). Will attempt to reconnect."
-                )
-                # Standard delay will apply before reconnecting
+                if "Server initiated disconnect" in close_reason:
+                    logger.info(
+                        f"Client {CLIENT_ID}: Server initiated disconnect (1000). "
+                        f"Not attempting to reconnect."
+                    )
+                    manual_disconnect_initiated = True  # Signal to not reconnect
+                else:
+                    logger.info(
+                        f"Client {CLIENT_ID}: Server closed connection (1000). "
+                        f"Will attempt to reconnect."
+                    )
+                    # Standard delay will apply before reconnecting
             # For other close codes, standard delay applies
 
         except asyncio.CancelledError:
@@ -359,8 +421,11 @@ async def connect_and_send_updates():
             manual_disconnect_initiated = True
             break
         except Exception as e:
-            print(f"Client {CLIENT_ID}: An unexpected error occurred: {e}. Retrying...")
-            # Consider if some errors should be fatal and set manual_disconnect_initiated = True
+            logger.error(
+                f"Client {CLIENT_ID}: An unexpected error occurred: {e}. Signaling shutdown.",
+                exc_info=True,
+            )
+            manual_disconnect_initiated = True  # Stop retrying on generic errors
         finally:
             # Ensure tasks are cancelled if they were started
             if listener_task and not listener_task.done():

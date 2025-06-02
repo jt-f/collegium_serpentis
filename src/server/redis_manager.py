@@ -1,388 +1,453 @@
-"""Redis client management and related operations."""
+"""Redis client management and related operations using redis.asyncio directly."""
 
 import asyncio
+import json  # For deserializing if needed, though Pydantic handles most.
 import random
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
 
-import redis
+import redis.asyncio as redis_async  # Use redis.asyncio directly
 
 from src.server import config
-from src.shared.utils.config import REDIS_CONFIG
+from src.shared.schemas.websocket import (
+    AllClientStatuses,
+    ClientStatus,
+)
 from src.shared.utils.logging import get_logger
 
 # Initialize logger
 logger = get_logger(__name__)
 
-# Initialize Redis client
-redis_client = redis.asyncio.Redis(**REDIS_CONFIG)
+# Define a callback type for broadcasting a SINGLE client status
+SingleClientStatusBroadcastCallable = Callable[[ClientStatus], Awaitable[None]]
 
-# Status store to track service health
-status_store: dict[str, str] = {
-    config.STATUS_KEY_REDIS_STATUS: config.STATUS_VALUE_REDIS_UNKNOWN
-}
+CLIENT_STATUS_KEY_PREFIX = "client_status:"
 
 
-async def redis_health_check() -> None:
-    """
-    Background task that frequently checks if Redis is available.
-    This ensures the server notices immediately when Redis goes down.
-    """
-    check_interval = 3  # Check every 3 seconds
+class RedisManager:
+    """Manages Redis operations using redis.asyncio."""
 
-    while True:
-        await asyncio.sleep(check_interval)
+    def __init__(self):
+        self.status_store: dict[str, str] = {
+            config.STATUS_KEY_REDIS_STATUS: config.STATUS_VALUE_REDIS_UNKNOWN
+        }
+        self._single_status_broadcast_callback: (
+            SingleClientStatusBroadcastCallable | None
+        ) = None
+        self._redis_conn: redis_async.Redis | None = None
 
-        if (
-            status_store[config.STATUS_KEY_REDIS_STATUS]
-            != config.STATUS_VALUE_REDIS_CONNECTED
-        ):
-            continue
+    async def _get_async_redis_connection(self) -> redis_async.Redis:
+        """Get or create an async Redis connection using redis.asyncio."""
+        if self._redis_conn and await self._redis_conn.ping():
+            return self._redis_conn
 
+        logger.info(
+            f"Attempting to connect to Redis at {config.REDIS_HOST}:{config.REDIS_PORT}"
+        )
         try:
-            await asyncio.wait_for(redis_client.ping(), timeout=1.0)
-        except (TimeoutError, redis.ConnectionError) as e:
-            old_status = status_store[config.STATUS_KEY_REDIS_STATUS]
-            status_store[config.STATUS_KEY_REDIS_STATUS] = (
-                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            self._redis_conn = redis_async.Redis(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                db=config.REDIS_DB,
+                # decode_responses=True, # Pydantic will handle JSON (bytes) to model
             )
-            logger.error(
-                "Redis connection lost",
-                error=str(e),
-                previous_status=old_status,
-                timestamp=datetime.now(UTC).isoformat(),
+            await self._redis_conn.ping()  # Test connection
+            logger.info(
+                f"Successfully connected to Redis: {config.REDIS_HOST}:{config.REDIS_PORT}"
             )
-        except Exception as e:
-            old_status = status_store[config.STATUS_KEY_REDIS_STATUS]
-            status_store[config.STATUS_KEY_REDIS_STATUS] = (
-                config.STATUS_VALUE_REDIS_UNAVAILABLE
-            )
-            logger.error(
-                "Redis health check failed",
-                error=str(e),
-                previous_status=old_status,
-            )
-
-
-async def redis_reconnector() -> None:
-    """Background task that attempts to reconnect to Redis with exponential backoff."""
-    base_delay = 5
-    max_delay = 300
-    current_delay = base_delay
-
-    while True:
-        await asyncio.sleep(current_delay)
-
-        if (
-            status_store[config.STATUS_KEY_REDIS_STATUS]
-            == config.STATUS_VALUE_REDIS_CONNECTED
-        ):
-            current_delay = base_delay
-            continue
-
-        try:
-            logger.debug("Attempting to reconnect to Redis", delay=current_delay)
-            await redis_client.ping()
-            status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
                 config.STATUS_VALUE_REDIS_CONNECTED
             )
-            logger.info("Reconnected to Redis")
-            current_delay = base_delay
-        except redis.ConnectionError as e:
-            status_store[config.STATUS_KEY_REDIS_STATUS] = (
-                config.STATUS_VALUE_REDIS_UNAVAILABLE
-            )
-            logger.error(
-                "Redis still unavailable",
-                error=str(e),
-                next_retry_in=current_delay * 2,
-            )
-            current_delay = min(current_delay * 2, max_delay)
-            current_delay = current_delay * (0.8 + 0.4 * random.random())
+            return self._redis_conn
         except Exception as e:
-            status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            logger.error(f"Failed to connect to Redis: {e}", exc_info=True)
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
                 config.STATUS_VALUE_REDIS_UNAVAILABLE
             )
-            logger.error(
-                "Redis still unavailable (UnknownError)",
-                error=str(e),
-                next_retry_in=current_delay,
+            if self._redis_conn:
+                await self._redis_conn.close()
+            self._redis_conn = None
+            raise  # Re-raise the exception to be handled by callers like initialize or reconnector
+
+    def register_single_status_broadcast_callback(
+        self, callback: SingleClientStatusBroadcastCallable
+    ) -> None:
+        """Registers a callback function for broadcasting single client status updates."""
+        self._single_status_broadcast_callback = callback
+
+    async def initialize(self) -> None:
+        """Initialize Redis connection."""
+        try:
+            await self._get_async_redis_connection()
+            # No Migrator().run() needed as we are not using redis-om schemas directly in Redis
+            logger.info("RedisManager initialized successfully.")
+        except Exception as e:
+            # _get_async_redis_connection already logs and sets status
+            logger.error(f"RedisManager initialization failed: {e}")
+            # Ensure status reflects unavailability if connection failed during init
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
             )
-            current_delay = min(current_delay * 2, max_delay)
 
+    async def health_check(self) -> None:
+        """Background task that frequently checks if Redis is available."""
+        check_interval = config.REDIS_HEALTH_CHECK_INTERVAL_SECONDS
 
-async def update_client_status(
-    client_id: str, status_attributes: dict[str, Any]
-) -> bool:
-    """Update client status in Redis."""
-    if not status_attributes:
-        return True
+        while True:
+            await asyncio.sleep(check_interval)
+            try:
+                if not self._redis_conn:
+                    logger.warning(
+                        "Health check: No active Redis connection, attempting to establish."
+                    )
+                    await self._get_async_redis_connection()
+                else:
+                    is_connected = await asyncio.wait_for(
+                        self._redis_conn.ping(),
+                        timeout=config.REDIS_HEALTH_CHECK_TIMEOUT_SECONDS,
+                    )
+                    if not is_connected:
+                        raise ConnectionError(
+                            "Redis ping returned False during health check."
+                        )
+                    if (
+                        self.status_store[config.STATUS_KEY_REDIS_STATUS]
+                        != config.STATUS_VALUE_REDIS_CONNECTED
+                    ):
+                        logger.info("Redis connection re-established by health check.")
+                        self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                            config.STATUS_VALUE_REDIS_CONNECTED
+                        )
 
-    processed_attributes = {str(k): str(v) for k, v in status_attributes.items()}
-
-    if (
-        status_store[config.STATUS_KEY_REDIS_STATUS]
-        != config.STATUS_VALUE_REDIS_CONNECTED
-    ):
-        logger.warning(
-            "Redis unavailable, cannot update client status for %s",
-            client_id,
-        )
-        return False
-
-    try:
-        redis_key = f"client:{client_id}:status"
-        await redis_client.hset(redis_key, mapping=processed_attributes)
-        logger.debug(
-            "Updated client status in Redis for %s",
-            client_id,
-        )
-        return True
-    except (TimeoutError, redis.ConnectionError) as e:
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        logger.error(
-            "Redis connection failed during status update for %s",
-            client_id,
-            error=str(e),
-        )
-        return False
-    except Exception as e:
-        logger.error(
-            "Failed to update client status in Redis for %s",
-            client_id,
-            error=str(e),
-        )
-        return False
-
-
-async def perform_cleanup_cycle():
-    """Perform one cycle of client cleanup. This function can be tested directly."""
-    max_disconnect_duration = 60  # 1 minute in seconds
-    logger.debug("Running cleanup for disconnected clients...")
-    current_time = datetime.now(UTC)
-    clients_to_delete = []
-
-    if (
-        status_store[config.STATUS_KEY_REDIS_STATUS]
-        != config.STATUS_VALUE_REDIS_CONNECTED
-    ):
-        logger.warning("Redis unavailable, skipping cleanup cycle.")
-        return
-
-    try:
-        async for key_b in redis_client.scan_iter("client:*:status"):
-            key = key_b.decode()
-            client_id = key.split(":")[1]
-            status_data_raw = await redis_client.hgetall(key)
-
-            status_data = {k.decode(): v.decode() for k, v in status_data_raw.items()}
-
-            if status_data.get("connected") == "false":
-                disconnect_time_str = status_data.get("disconnect_time")
-                if disconnect_time_str:
+            except Exception as e:
+                old_status = self.status_store[config.STATUS_KEY_REDIS_STATUS]
+                if old_status == config.STATUS_VALUE_REDIS_CONNECTED:
+                    logger.error(
+                        "Redis connection lost during health check",
+                        error=str(e),
+                        timestamp=datetime.now(UTC).isoformat(),
+                    )
+                self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                    config.STATUS_VALUE_REDIS_UNAVAILABLE
+                )
+                # Attempt to close the potentially broken connection
+                if self._redis_conn:
                     try:
-                        disconnect_time = datetime.fromisoformat(
-                            disconnect_time_str.replace("Z", "+00:00")
+                        await self._redis_conn.close()
+                    except Exception as e:
+                        pass
+                    self._redis_conn = None
+
+    async def reconnector(self) -> None:
+        """Background task that attempts to reconnect to Redis with exponential backoff."""
+        base_delay = config.REDIS_RECONNECT_ATTEMPT_INTERVAL_SECONDS
+        max_delay = 300
+        current_delay = base_delay
+
+        while True:
+            if (
+                self.status_store[config.STATUS_KEY_REDIS_STATUS]
+                == config.STATUS_VALUE_REDIS_CONNECTED
+            ):
+                await asyncio.sleep(
+                    current_delay
+                )  # Check periodically even if connected
+                current_delay = base_delay  # Reset delay if connection was good
+                continue
+
+            logger.info(f"Attempting to reconnect to Redis in {current_delay:.2f}s")
+            await asyncio.sleep(current_delay)
+
+            try:
+                await self._get_async_redis_connection()  # This will set status to CONNECTED on success
+                logger.info("Reconnected to Redis successfully.")
+                current_delay = base_delay  # Reset delay on successful reconnect
+            except Exception as e:
+                logger.error(f"Redis reconnection attempt failed: {e}")
+                current_delay = min(current_delay * 2, max_delay)
+                current_delay = current_delay * (0.8 + 0.4 * random.random())
+
+    def _get_client_key(self, client_id: str) -> str:
+        return f"{CLIENT_STATUS_KEY_PREFIX}{client_id}"
+
+    async def update_client_status(
+        self,
+        client_status: ClientStatus,
+        broadcast: bool = True,
+        originating_client_id: str | None = None,
+    ) -> bool:
+        """Update client status in Redis as a JSON string and optionally broadcast."""
+
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning(
+                f"Redis unavailable, cannot update client status for {client_status.client_id}"
+            )
+            return False
+
+        try:
+            client_key = self._get_client_key(client_status.client_id)
+            # Pydantic V2 model_dump_json serializes to JSON string
+            json_data = client_status.model_dump_json()
+            await self._redis_conn.set(client_key, json_data)
+            logger.debug(
+                f"Updated client status for {client_status.client_id} in Redis."
+            )
+
+            if broadcast and self._single_status_broadcast_callback:
+                logger.info(
+                    f"RedisManager: Status updated for {client_status.client_id}, initiating broadcast."
+                )
+                await self._single_status_broadcast_callback(client_status)
+            return True
+        except Exception as e:
+            logger.error(
+                f"Failed to update client status in Redis for {client_status.client_id}",
+                error=str(e),
+                exc_info=True,
+            )
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
+            return False
+
+    async def get_client_info(self, client_id: str) -> ClientStatus | None:
+        """Get client info from Redis (JSON string) and parse to ClientStatus model."""
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning(
+                f"Cannot get client info for {client_id}: Redis unavailable."
+            )
+            return None
+
+        try:
+            client_key = self._get_client_key(client_id)
+            json_data = await self._redis_conn.get(client_key)
+            if json_data is None:
+                logger.debug(
+                    f"Client {client_id} not found in Redis (key: {client_key})."
+                )
+                return None
+            # Pydantic V2 model_validate_json parses JSON string (or bytes) to model
+            client_status = ClientStatus.model_validate_json(json_data)
+            return client_status
+        except (
+            json.JSONDecodeError
+        ) as e:  # Should be caught by Pydantic's validation usually
+            logger.error(
+                f"Failed to parse JSON for client {client_id}: {e}", exc_info=True
+            )
+            return None
+        except Exception as e:  # Catches Pydantic ValidationError and others
+            logger.error(
+                f"Could not retrieve/parse client {client_id} status: {e}",
+                exc_info=True,
+            )
+            # Potentially a Redis issue if not JSON/Pydantic error
+            if not isinstance(
+                e | (json.JSONDecodeError, ValueError)
+            ):  # Pydantic validation errors are ValueError subclasses
+                self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                    config.STATUS_VALUE_REDIS_UNAVAILABLE
+                )
+            return None
+
+    async def get_all_client_statuses(self) -> AllClientStatuses | None:
+        """Fetch all client statuses from Redis."""
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning("Cannot fetch client statuses: Redis unavailable.")
+            return None
+
+        statuses: dict[str, ClientStatus] = {}
+        try:
+            async for key_bytes in self._redis_conn.scan_iter(
+                match=f"{CLIENT_STATUS_KEY_PREFIX}*"
+            ):
+                key = key_bytes.decode("utf-8")
+                client_id_from_key = key.split(CLIENT_STATUS_KEY_PREFIX, 1)[1]
+                json_data = await self._redis_conn.get(key)
+                if json_data:
+                    try:
+                        client_status = ClientStatus.model_validate_json(json_data)
+                        if client_status.client_id == client_id_from_key:
+                            statuses[client_status.client_id] = client_status
+                        else:
+                            logger.warning(
+                                f"Mismatch client_id in key vs data: {key} vs {client_status.client_id}"
+                            )
+                    except Exception as e_parse:  # Pydantic validation or JSON error
+                        logger.error(
+                            f"Failed to parse client status for key {key}: {e_parse}"
+                        )
+                else:
+                    logger.warning(f"Got key {key} from scan but no data from GET.")
+
+            logger.debug(
+                f"Successfully fetched {len(statuses)} client statuses from Redis."
+            )
+            return AllClientStatuses.create(
+                clients_dict=statuses, redis_status=self.get_redis_status()
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to fetch all client statuses from Redis",
+                error=str(e),
+                exc_info=True,
+            )
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
+            return None
+
+    def get_redis_status(self) -> str:
+        """Get the current Redis connection status."""
+        return self.status_store.get(
+            config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_REDIS_UNKNOWN
+        )
+
+    async def perform_cleanup_cycle(self):
+        """Perform cleanup for disconnected clients."""
+        max_disconnect_duration_seconds = (
+            config.REDIS_CLIENT_TTL_SECONDS
+        )  # Re-using this, but logic is different
+        logger.debug("Running cleanup for disconnected clients...")
+        current_time = datetime.now(UTC)
+
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning("Redis unavailable, skipping cleanup cycle.")
+            return
+
+        clients_deleted_count = 0
+        try:
+            async for key_bytes in self._redis_conn.scan_iter(
+                match=f"{CLIENT_STATUS_KEY_PREFIX}*"
+            ):
+                key = key_bytes.decode("utf-8")
+                json_data = await self._redis_conn.get(key)
+                if not json_data:
+                    continue
+
+                try:
+                    client_status = ClientStatus.model_validate_json(json_data)
+                    if (
+                        client_status.connected == config.STATUS_VALUE_DISCONNECTED
+                        and client_status.disconnect_time
+                    ):
+                        disconnect_dt = datetime.fromisoformat(
+                            client_status.disconnect_time.replace("Z", "+00:00")
                         )
                         if (
-                            current_time - disconnect_time
-                        ).total_seconds() > max_disconnect_duration:
-                            clients_to_delete.append(client_id)
-                    except ValueError as e:
-                        logger.warning(
-                            f"Invalid disconnect_time format for client "
-                            f"{client_id}: {disconnect_time_str}, error: {e}"
-                        )
+                            current_time - disconnect_dt
+                        ).total_seconds() > max_disconnect_duration_seconds:
+                            logger.info(
+                                f"Deleting data for stale disconnected client {client_status.client_id} (key: {key})."
+                            )
+                            await self._redis_conn.delete(key)
+                            clients_deleted_count += 1
+                except (
+                    Exception
+                ) as e_parse_check:  # Pydantic validation, JSON, or datetime error
+                    logger.warning(
+                        f"Error processing client {key} during cleanup: {e_parse_check}"
+                    )
 
-        for client_id in clients_to_delete:
-            logger.info(
-                f"Deleting data for disconnected client {client_id} from Redis."
+            if clients_deleted_count > 0:
+                logger.debug(
+                    f"Finished client cleanup, deleted {clients_deleted_count} clients."
+                )
+            else:
+                logger.debug(
+                    "Client cleanup cycle finished, no stale clients found to delete."
+                )
+
+        except Exception as e:
+            logger.error(f"Error during client cleanup: {e}", exc_info=True)
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
             )
-            await redis_client.delete(f"client:{client_id}:status")
 
-        if clients_to_delete:
-            logger.debug(
-                f"Finished Redis cleanup, deleted {len(clients_to_delete)} clients."
+    async def cleanup_disconnected_clients(self):
+        """Background task that periodically cleans up disconnected clients."""
+        cleanup_interval = 60  # Check every 60 seconds
+        logger.info("Starting background task: cleanup_disconnected_clients")
+        while True:
+            await asyncio.sleep(cleanup_interval)
+            await self.perform_cleanup_cycle()
+
+    async def close(self) -> None:
+        """Close Redis connection."""
+        if self._redis_conn:
+            try:
+                await self._redis_conn.close()
+                # For redis.asyncio, wait_closed might not be needed or available in the same way
+                # await self._redis_conn.wait_closed() # Check redis.asyncio docs if needed
+                logger.info("Redis connection closed.")
+            except Exception as e:
+                logger.warning(
+                    f"Error while closing Redis connection: {e}", exc_info=True
+                )
+            finally:
+                self._redis_conn = None
+        self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+            config.STATUS_VALUE_REDIS_UNAVAILABLE
+        )
+
+    async def delete_client_status(self, client_id: str) -> bool:
+        """Delete a client's status from Redis by client_id."""
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning(
+                f"Redis unavailable, cannot delete client status for {client_id}"
             )
+            return False
+        if not client_id:
+            logger.warning("delete_client_status called with empty client_id.")
+            return False
 
-    except redis.RedisError as e:
-        logger.error(f"Redis error during client cleanup: {e}")
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )  # Mark Redis as unavailable
-    except Exception as e:
-        logger.error(f"Unexpected error during Redis client cleanup: {e}")
-
-    logger.debug("Client cleanup cycle finished.")
-
-
-async def cleanup_disconnected_clients():
-    """Background task that periodically cleans up disconnected clients."""
-    cleanup_interval = 60  # Check every 60 seconds
-    logger.info("Starting background task: cleanup_disconnected_clients")
-    while True:
-        await asyncio.sleep(cleanup_interval)
-        await perform_cleanup_cycle()
-
-
-async def get_all_client_statuses() -> (
-    tuple[dict[str, dict[str, str]], str, str | None]
-):
-    """
-    Fetch all client statuses from Redis.
-
-    Returns:
-        tuple: (statuses, redis_status, error_msg)
-    """
-    statuses: dict[str, dict[str, str]] = {}
-    error_msg: str | None = None
-    redis_status = status_store.get(
-        config.STATUS_KEY_REDIS_STATUS, config.STATUS_VALUE_REDIS_UNKNOWN
-    )
-
-    if (
-        status_store[config.STATUS_KEY_REDIS_STATUS]
-        != config.STATUS_VALUE_REDIS_CONNECTED
-    ):
-        error_msg = "Redis is unavailable."
-        logger.warning("Cannot fetch client statuses: Redis unavailable.")
-        return statuses, redis_status, error_msg
-
-    try:
-        async for key_b in redis_client.scan_iter("client:*:status"):
-            key = key_b.decode()
-            client_id = key.split(":")[1]
-            status_data_raw = await redis_client.hgetall(key)
-            statuses[client_id] = {
-                k.decode(): v.decode() for k, v in status_data_raw.items()
-            }
-        logger.debug(
-            "Successfully fetched client statuses from Redis", count=len(statuses)
-        )
-    except (TimeoutError, redis.ConnectionError) as e:
-        error_msg = str(e)
-        logger.error(
-            "Failed to fetch client statuses from Redis (Connection Error)",
-            error=error_msg,
-        )
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        redis_status = config.STATUS_VALUE_REDIS_UNAVAILABLE
-    except redis.RedisError as e:
-        error_msg = str(e)
-        logger.error(
-            "Failed to fetch client statuses from Redis (RedisError)", error=error_msg
-        )
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        redis_status = config.STATUS_VALUE_REDIS_UNAVAILABLE
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(
-            "Failed to fetch client statuses from Redis (Unknown Error)",
-            error=error_msg,
-        )
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        redis_status = config.STATUS_VALUE_REDIS_UNAVAILABLE
-
-    return statuses, redis_status, error_msg
+        try:
+            client_key = self._get_client_key(client_id)
+            deleted_count = await self._redis_conn.delete(client_key)
+            if deleted_count > 0:
+                logger.info(
+                    f"Successfully deleted client status for {client_id} from Redis (key: {client_key})."
+                )
+                # Optionally, broadcast a client_removed message if not handled by the caller
+                # For example, by calling a registered callback or directly using ws_manager if accessible
+                # For now, the background_tasks.py handles broadcasting the disconnected state before calling delete.
+                return True
+            else:
+                logger.warning(
+                    f"No client status found to delete for client_id {client_id} (key: {client_key})."
+                )
+                return False
+        except Exception as e:
+            logger.error(
+                f"Failed to delete client status from Redis for {client_id}",
+                error=str(e),
+                exc_info=True,
+            )
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
+            return False
 
 
-async def get_client_info(client_id: str) -> dict[str, str] | None:
-    """Get client info from Redis."""
-    if (
-        status_store[config.STATUS_KEY_REDIS_STATUS]
-        != config.STATUS_VALUE_REDIS_CONNECTED
-    ):
-        logger.warning(f"Cannot get client info for {client_id}: Redis unavailable.")
-        return None
-
-    try:
-        redis_key = f"client:{client_id}:status"
-        client_info_redis_raw = await redis_client.hgetall(redis_key)
-        if client_info_redis_raw:
-            return {k.decode(): v.decode() for k, v in client_info_redis_raw.items()}
-        return None
-    except (TimeoutError, redis.ConnectionError) as e:
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        logger.warning(
-            f"Could not retrieve client {client_id} status from Redis (Connection Error): {e}"
-        )
-        return None
-    except redis.RedisError as e:
-        logger.warning(
-            f"Could not retrieve client {client_id} status from Redis (RedisError): {e}"
-        )
-        return None
-    except Exception as e:
-        logger.warning(
-            f"Could not retrieve client {client_id} status from Redis (Unknown Error): {e}"
-        )
-        return None
-
-
-async def initialize_redis() -> None:
-    """Initialize Redis connection and set status."""
-    try:
-        await redis_client.ping()
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_CONNECTED
-        )
-        logger.info("Successfully connected to Redis")
-    except redis.ConnectionError as e:
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        logger.error(
-            "Failed to connect to Redis",
-            error=str(e),
-        )
-    except redis.RedisError as e:
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        logger.error(
-            "Failed to connect to Redis",
-            error=str(e),
-        )
-    except Exception as e:
-        status_store[config.STATUS_KEY_REDIS_STATUS] = (
-            config.STATUS_VALUE_REDIS_UNAVAILABLE
-        )
-        logger.error(
-            "Failed to connect to Redis (UnknownError)",
-            error=str(e),
-        )
-
-
-async def close_redis() -> None:
-    """Close Redis connection."""
-    try:
-        await redis_client.close()
-        await redis_client.wait_closed()
-        logger.info("Redis connection closed and waited")
-    except Exception as e:
-        logger.warning("Error while closing Redis connection", error=str(e))
-
-
-__all__ = [
-    "redis_client",
-    "status_store",
-    "redis_health_check",
-    "redis_reconnector",
-    "update_client_status",
-    "perform_cleanup_cycle",
-    "cleanup_disconnected_clients",
-    "get_all_client_statuses",
-    "get_client_info",
-    "initialize_redis",
-    "close_redis",
-]
+# Global instance
+redis_manager = RedisManager()
