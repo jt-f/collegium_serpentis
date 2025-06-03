@@ -27,7 +27,10 @@ def test_periodic_client_cleanup_task_handles_no_clients(monkeypatch):
 
 def test_handle_frontend_client_cleanup_removes_stale(monkeypatch):
     ws_manager = MagicMock()
-    ws_manager.active_connections = {"frontend1": MagicMock()}
+    # Ensure the mock websocket and its close method are AsyncMocks
+    mock_ws_frontend = AsyncMock()
+    mock_ws_frontend.close = AsyncMock()
+    ws_manager.active_connections = {"frontend1": mock_ws_frontend}
     now = datetime.now(UTC)
     old_heartbeat = (
         now
@@ -62,7 +65,10 @@ def test_handle_frontend_client_cleanup_removes_stale(monkeypatch):
 
 def test_handle_worker_client_cleanup_dormant_and_disconnect(monkeypatch):
     ws_manager = MagicMock()
-    ws_manager.active_connections = {"worker1": MagicMock()}
+    # Ensure the mock websocket and its close method are AsyncMocks
+    mock_ws_worker = AsyncMock()
+    mock_ws_worker.close = AsyncMock()
+    ws_manager.active_connections = {"worker1": mock_ws_worker}
     now = datetime.now(UTC)
     # Dormant
     last_comm_dormant = (

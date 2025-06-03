@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import websockets
+from websockets.protocol import State as ConnectionState
 
 from src.client import client
 from src.client.client import ClientInitiatedDisconnect
@@ -17,7 +18,7 @@ logging.getLogger("src.client.client").setLevel(logging.WARNING)
 @pytest.fixture
 def mock_websocket():
     """Create a mock WebSocket connection that supports async iteration."""
-    ws = AsyncMock(spec=websockets.WebSocketClientProtocol)
+    ws = AsyncMock()  # Removed spec=websockets.WebSocketClientProtocol
     ws.send = AsyncMock()
     ws.close = AsyncMock()
 
@@ -27,7 +28,7 @@ def mock_websocket():
     # Tests will configure async_iterator_mock.__anext__.side_effect directly
 
     # For `websockets.protocol.State.CLOSED` check in client.py finally block
-    ws.state = websockets.protocol.State.OPEN  # Default to open
+    ws.state = ConnectionState.OPEN  # Default to open
 
     return ws
 

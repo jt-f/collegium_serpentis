@@ -4,7 +4,7 @@ Unit tests for the WebSocket server.
 This module tests all the WebSocket connection behavior, client status management,
 and REST API functionality, with appropriate mocking for Redis.
 """
-
+from datetime import UTC, datetime  # Added datetime, UTC
 from unittest.mock import AsyncMock
 
 import pytest
@@ -142,8 +142,11 @@ async def test_handle_disconnect_worker(monkeypatch):
         AsyncMock(
             return_value=ClientStatus(
                 client_id=client_id,
-                client_role="worker",
+                client_role="worker",  # This is the key field
                 connected=config.STATUS_VALUE_CONNECTED,
+                client_state=config.CLIENT_STATE_RUNNING,  # Add a sensible default
+                last_seen=datetime.now(UTC).isoformat(),  # Add a sensible default
+                timestamp=datetime.now(UTC).isoformat(),  # Add a sensible default
             )
         ),
     )

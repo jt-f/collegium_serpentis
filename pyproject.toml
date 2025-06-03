@@ -39,7 +39,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-vvv --cov=src --cov-report=term-missing"
+addopts = "-vvv --cov=src --cov-report=term-missing --cov-report=xml"
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
