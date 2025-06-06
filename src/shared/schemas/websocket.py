@@ -234,10 +234,7 @@ class AllClientStatuses(BaseModel):
 
 # Messages that can be sent from client to server
 ClientMessage = (
-    ClientRegistrationMessage
-    | WorkerStatusUpdateMessage
-    | ControlMessage
-    | ChatMessage
+    ClientRegistrationMessage | WorkerStatusUpdateMessage | ControlMessage | ChatMessage
 )
 
 # Messages that can be sent from server to client

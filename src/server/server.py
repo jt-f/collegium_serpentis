@@ -7,9 +7,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.websockets import WebSocketState
 
 from src.server import config
 from src.server.redis_manager import redis_manager
@@ -148,14 +148,18 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps({"error": error_msg}))
             await websocket.close(code=config.WEBSOCKET_CLOSE_CODE_INVALID_PAYLOAD)
             return
-            
+
         client_id = message.get("client_id")
         status_attributes = message.get("status", {})
         client_role = status_attributes.get("client_role")  # Expect role in status
 
         if not client_id or not client_role:
-            error_msg = "client_id and client_role in status are required for registration"
-            logger.warning(f"Client registration failed: {error_msg}", data=initial_data)
+            error_msg = (
+                "client_id and client_role in status are required for registration"
+            )
+            logger.warning(
+                f"Client registration failed: {error_msg}", data=initial_data
+            )
             await websocket.send_text(json.dumps({"error": error_msg}))
             await websocket.close(code=config.WEBSOCKET_CLOSE_CODE_POLICY_VIOLATION)
             return
@@ -191,15 +195,19 @@ async def websocket_endpoint(websocket: WebSocket):
         success = await update_client_status(client_id, final_status_attributes)
         # Fetch the definitive status from Redis/cache after update for broadcasting
         stored_status_after_conn = await get_client_info(client_id)
-        
+
         # If Redis is not available, use the status we just tried to set
         if stored_status_after_conn is None:
             stored_status_after_conn = final_status_attributes
             stored_status_after_conn["redis_status"] = "unavailable"
         else:
             # Make sure we have a fresh copy of the status from Redis
-            stored_status_after_conn = await get_client_info(client_id) or final_status_attributes
-            stored_status_after_conn["redis_status"] = status_store.get("redis", "unavailable")
+            stored_status_after_conn = (
+                await get_client_info(client_id) or final_status_attributes
+            )
+            stored_status_after_conn["redis_status"] = status_store.get(
+                "redis", "unavailable"
+            )
 
         if success and stored_status_after_conn:
             logger.info(
@@ -221,11 +229,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 "client_id": client_id,
                 "status": stored_status_after_conn,
             }
-            
+
             if client_role != "frontend":
-                logger.debug(
-                    f"Processing status update from worker {client_id}"
-                )
+                logger.debug(f"Processing status update from worker {client_id}")
                 # Update the client's status in Redis
                 status_attributes = message.get("status", {})
                 if status_attributes:
@@ -233,14 +239,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     status_attributes["last_seen"] = datetime.now(UTC).isoformat()
                     # Make sure we have the current Redis status
                     current_status = await get_client_info(client_id) or {}
-                    status_attributes["redis_status"] = status_store.get("redis", "unavailable")
-                    
-                    success = await update_client_status(
-                        client_id, status_attributes
+                    status_attributes["redis_status"] = status_store.get(
+                        "redis", "unavailable"
                     )
+
+                    success = await update_client_status(client_id, status_attributes)
                     if success:
                         # Broadcast the state change to all frontends
-                        await broadcast_client_state_change(client_id, status_attributes)
+                        await broadcast_client_state_change(
+                            client_id, status_attributes
+                        )
                         # Removed redundant broadcast call
                         await websocket.send_text(
                             json.dumps(
@@ -248,18 +256,18 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "result": "status_updated",
                                     "client_id": client_id,
                                     "status_updated": status_attributes,
-                                    "redis_status": status_attributes.get("redis_status", "unavailable")
+                                    "redis_status": status_attributes.get(
+                                        "redis_status", "unavailable"
+                                    ),
                                 }
                             )
                         )
                     else:
-                        logger.error(
-                            f"Failed to update status for client {client_id}"
-                        )
+                        logger.error(f"Failed to update status for client {client_id}")
                 else:
                     logger.warning(
                         f"Received empty status update from client {client_id}"
-                    )          # For non-frontend clients, just send the registration complete message
+                    )  # For non-frontend clients, just send the registration complete message
             await websocket.send_text(json.dumps(ack_message))
             logger.debug(f"[DEBUG] ACK sent to worker {client_id}")
 
@@ -285,34 +293,48 @@ async def websocket_endpoint(websocket: WebSocket):
                 # This message is a control command from a frontend/control client
                 action = message.get("action")
                 target_client_id = message.get("target_client_id")
-                control_message_id = message.get("message_id") # Optional, for tracking
+                control_message_id = message.get("message_id")  # Optional, for tracking
 
                 # Basic validation
                 if not client_role == "frontend":
-                    logger.warning(f"Non-frontend client {client_id} attempted control action {action}. Denying.")
-                    await websocket.send_text(json.dumps({
-                        "type": "control_response",
-                        "action": action,
-                        "target_client_id": target_client_id,
-                        "message_id": control_message_id,
-                        "status": "error",
-                        "message": "Permission denied: Only frontend clients can issue control commands."
-                    }))
-                    continue
-                
-                if not action or not target_client_id:
-                    logger.warning(f"Frontend client {client_id} sent invalid control message: {message}")
-                    await websocket.send_text(json.dumps({
-                        "type": "control_response",
-                        "action": action,
-                        "target_client_id": target_client_id,
-                        "message_id": control_message_id,
-                        "status": "error",
-                        "message": "'action' and 'target_client_id' are required for control commands."
-                    }))
+                    logger.warning(
+                        f"Non-frontend client {client_id} attempted control action {action}. Denying."
+                    )
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "control_response",
+                                "action": action,
+                                "target_client_id": target_client_id,
+                                "message_id": control_message_id,
+                                "status": "error",
+                                "message": "Permission denied: Only frontend clients can issue control commands.",
+                            }
+                        )
+                    )
                     continue
 
-                logger.info(f"Frontend client {client_id} sending control: {action} to {target_client_id}")
+                if not action or not target_client_id:
+                    logger.warning(
+                        f"Frontend client {client_id} sent invalid control message: {message}"
+                    )
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "control_response",
+                                "action": action,
+                                "target_client_id": target_client_id,
+                                "message_id": control_message_id,
+                                "status": "error",
+                                "message": "'action' and 'target_client_id' are required for control commands.",
+                            }
+                        )
+                    )
+                    continue
+
+                logger.info(
+                    f"Frontend client {client_id} sending control: {action} to {target_client_id}"
+                )
                 response_payload = {}
                 if action == "pause":
                     response_payload = await pause_client(target_client_id)
@@ -321,31 +343,43 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "disconnect":
                     response_payload = await disconnect_client(target_client_id)
                 else:
-                    response_payload = {"status": "error", "message": f"Unknown control action: {action}"}
-                
-                await websocket.send_text(json.dumps({
-                    "type": "control_response",
-                    "action": action,
-                    "target_client_id": target_client_id,
-                    "message_id": control_message_id,
-                    **response_payload
-                }))
+                    response_payload = {
+                        "status": "error",
+                        "message": f"Unknown control action: {action}",
+                    }
+
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "control_response",
+                            "action": action,
+                            "target_client_id": target_client_id,
+                            "message_id": control_message_id,
+                            **response_payload,
+                        }
+                    )
+                )
 
             # elif message_type == "status_update": # Or assume if not 'control', it's a status update from worker
             # For now, assume any message not of type 'control' from a non-frontend client is a status update.
-            elif client_role != "frontend": 
+            elif client_role != "frontend":
                 # This is a status update from a worker client
                 logger.info(
                     f"[DEBUG] START: Handling status update from worker {client_id}: {message}"
                 )
                 message_client_id_from_payload = message.get("client_id")
-                if message_client_id_from_payload and message_client_id_from_payload != client_id:
+                if (
+                    message_client_id_from_payload
+                    and message_client_id_from_payload != client_id
+                ):
                     logger.warning(
                         f"Worker {client_id} sent status with conflicting client_id '{message_client_id_from_payload}'. Using connection's client_id."
                     )
                     # Decide if to reject or just log and proceed with the connection's client_id
 
-                status_attributes = message.get("status", message)  # Handle both formats
+                status_attributes = message.get(
+                    "status", message
+                )  # Handle both formats
                 if not isinstance(status_attributes, dict):
                     logger.warning(
                         f"Received non-dict status from worker {client_id}: {status_attributes}. Wrapping in 'raw_payload'."
@@ -354,43 +388,59 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 current_time_iso = datetime.now(UTC).isoformat()
                 status_attributes["last_seen"] = current_time_iso
-                
+
                 # Add Redis status to the status attributes before updating
-                status_attributes["redis_status"] = status_store.get("redis", "unavailable")
-                
+                status_attributes["redis_status"] = status_store.get(
+                    "redis", "unavailable"
+                )
+
                 logger.debug(f"[DEBUG] Calling update_client_status for {client_id}")
                 success = await update_client_status(client_id, status_attributes)
-                logger.debug(f"[DEBUG] update_client_status completed with success={success}")
-                
+                logger.debug(
+                    f"[DEBUG] update_client_status completed with success={success}"
+                )
+
                 # Get the latest status from Redis after update
                 latest_status = await get_client_info(client_id) or {}
-                
+
                 # Ensure redis_status is included in the response
                 response_status = {**status_attributes}
                 if "redis_status" not in response_status:
-                    response_status["redis_status"] = status_store.get("redis", "unavailable")
-                
+                    response_status["redis_status"] = status_store.get(
+                        "redis", "unavailable"
+                    )
+
                 logger.info(
                     f"[DEBUG] END: Handling status update from worker {client_id}: {response_status}"
                 )
-                
+
                 # Send acknowledgment for status update
-                await websocket.send_text(json.dumps({
-                    "result": "message_processed",
-                    "client_id": client_id,
-                    "status_updated": response_status,
-                    "redis_status": response_status.get("redis_status", "unavailable")
-                }))
-            else: # Message from a frontend client that is not 'control'
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "result": "message_processed",
+                            "client_id": client_id,
+                            "status_updated": response_status,
+                            "redis_status": response_status.get(
+                                "redis_status", "unavailable"
+                            ),
+                        }
+                    )
+                )
+            else:  # Message from a frontend client that is not 'control'
                 logger.debug(
                     f"Received unhandled message type '{message_type}' from frontend {client_id}: {message}"
                 )
                 # Optionally send an error or acknowledgment for unhandled frontend messages
-                await websocket.send_text(json.dumps({
-                    "type": "message_receipt_unknown",
-                    "original_message": message,
-                    "info": "Message type not recognized for frontend clients, aside from 'control'."
-                }))
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "message_receipt_unknown",
+                            "original_message": message,
+                            "info": "Message type not recognized for frontend clients, aside from 'control'.",
+                        }
+                    )
+                )
 
     except WebSocketDisconnect:
         # This block will be entered when the client disconnects.
@@ -399,16 +449,20 @@ async def websocket_endpoint(websocket: WebSocket):
         )
         # handle_disconnect will be called in the finally block
 
-    except json.JSONDecodeError as e:  # Catch errors during initial registration message parsing or loop
-        logger.error(f"Invalid JSON from {client_id or 'unregistered client'}", error=str(e), client_id=client_id)
+    except (
+        json.JSONDecodeError
+    ) as e:  # Catch errors during initial registration message parsing or loop
+        logger.error(
+            f"Invalid JSON from {client_id or 'unregistered client'}",
+            error=str(e),
+            client_id=client_id,
+        )
         if websocket.client_state == WebSocketState.CONNECTED:
             try:
-                await websocket.send_text(
-                    json.dumps({"error": "Invalid JSON format"})
-                )
+                await websocket.send_text(json.dumps({"error": "Invalid JSON format"}))
                 await websocket.close(code=config.WEBSOCKET_CLOSE_CODE_PROTOCOL_ERROR)
             except RuntimeError:
-                 pass # Already closing or closed
+                pass  # Already closing or closed
     except Exception as e:
         logger.error(
             f"Unexpected WebSocket error for client: {{client_id='{client_id}', role='{client_role}'}}",
@@ -476,11 +530,11 @@ async def get_client_info(client_id: str) -> dict | None:
     try:
         # Get the client's status from Redis
         logger.debug(f"[DEBUG] Calling redis.hgetall for client:{client_id}:status")
-        status_data = await redis_client.hgetall(
-            f"client:{client_id}:status"
+        status_data = await redis_client.hgetall(f"client:{client_id}:status")
+        logger.debug(
+            f"[DEBUG] redis.hgetall completed for {client_id}, got {len(status_data)} items"
         )
-        logger.debug(f"[DEBUG] redis.hgetall completed for {client_id}, got {len(status_data)} items")
-        
+
         if not status_data:
             logger.debug(f"No status data found in Redis for client {client_id}")
             return None
@@ -499,7 +553,7 @@ async def broadcast_client_state_change(
 ):
     """
     Fetches full client status and broadcasts it, optionally merging specific recent changes.
-    
+
     Args:
         client_id: The ID of the client whose status changed
         changed_state_attributes: Optional dictionary of attributes that changed
@@ -511,20 +565,21 @@ async def broadcast_client_state_change(
     try:
         # Get the current status from Redis
         full_status = await get_client_info(client_id) or {}
-        
+
         # If no status in Redis but we have changes, use those as the base
         if not full_status and changed_state_attributes:
             full_status = changed_state_attributes.copy()
-        
+
         # If we still don't have a status, log a warning and return
         if not full_status:
-            logger.warning(f"No status found for client {client_id} in broadcast_client_state_change")
+            logger.warning(
+                f"No status found for client {client_id} in broadcast_client_state_change"
+            )
             return
 
         # If specific changes were provided, merge them into the full status
         if changed_state_attributes:
             full_status.update(changed_state_attributes)
-
 
         # Ensure required fields are present
         full_status.setdefault("client_id", client_id)
@@ -535,15 +590,18 @@ async def broadcast_client_state_change(
             "type": "client_status_update",
             "client_id": client_id,
             "status": full_status,
-            "timestamp": datetime.now(UTC).isoformat()
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # Broadcast to all connected frontends
         await broadcast_to_frontends(broadcast_message)
-        
+
         logger.info(f"Broadcasted state change for client {client_id}")
     except Exception as e:
-        logger.error(f"Error broadcasting state change for client {client_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error broadcasting state change for client {client_id}: {e}",
+            exc_info=True,
+        )
 
 
 async def update_client_status(client_id: str, status_attributes: dict) -> bool:
@@ -563,18 +621,18 @@ async def update_client_status(client_id: str, status_attributes: dict) -> bool:
         attrs = status_attributes.copy()
         # Ensure redis_status is not stored in Redis
         attrs.pop("redis_status", None)
-        
+
         success = await redis_update_client_status(client_id, attrs)
         if not success:
             logger.warning(f"Failed to update status for client {client_id} in Redis")
             return False
-            
+
         # After successful update, trigger a broadcast of the state change
         # Include the redis_status in the broadcast
         broadcast_attrs = attrs.copy()
         broadcast_attrs["redis_status"] = status_store.get("redis", "unavailable")
         await broadcast_client_state_change(client_id, broadcast_attrs)
-        
+
         return True
     except Exception as e:
         logger.error(f"Error updating status for client {client_id} in Redis: {e}")
@@ -650,9 +708,9 @@ async def disconnect_client(client_id: str) -> dict:
         "status_detail": "Disconnected by server request (HTTP)",
         "disconnect_time": datetime.now(UTC).isoformat(),
         "client_state": "offline",
-        "redis_status": status_store.get("redis", "unavailable")
+        "redis_status": status_store.get("redis", "unavailable"),
     }
-    
+
     # Update the status in Redis and broadcast the change
     success = await update_client_status(client_id, status_update)
     if success:
@@ -664,7 +722,7 @@ async def disconnect_client(client_id: str) -> dict:
             "status": "info",
             "message": f"Client {client_id} was already disconnected. Status re-broadcasted.",
             "client_id": client_id,
-            "redis_status": status_store["redis"]
+            "redis_status": status_store["redis"],
         }
     if not websocket_to_close and not client_already_disconnected:
         # This case means the client wasn't in worker_connections, but wasn't marked disconnected in Redis.
@@ -673,13 +731,13 @@ async def disconnect_client(client_id: str) -> dict:
             "status": "warning",
             "message": f"Client {client_id} not actively connected. Status updated to disconnected and broadcasted.",
             "client_id": client_id,
-            "redis_status": status_store["redis"]
+            "redis_status": status_store["redis"],
         }
     return {
         "status": "success",
         "message": f"Disconnection process for client {client_id} initiated and broadcasted.",
         "client_id": client_id,
-        "redis_status": status_store["redis"]
+        "redis_status": status_store["redis"],
     }
 
 
@@ -700,7 +758,7 @@ async def pause_client(client_id: str) -> dict:
             )
             return {
                 "status": "error",
-                "message": f"Client {client_id} not found or already disconnected."
+                "message": f"Client {client_id} not found or already disconnected.",
             }
         logger.warning(
             f"Client {client_id} not actively connected via WebSocket for pause. Updating state in Redis only."
@@ -726,7 +784,7 @@ async def pause_client(client_id: str) -> dict:
                 del worker_connections[client_id]
             return {
                 "status": "error",
-                "message": f"Error sending pause command to client {client_id}: {e}"
+                "message": f"Error sending pause command to client {client_id}: {e}",
             }
 
     status_update = {"client_state": "paused"}
@@ -736,13 +794,13 @@ async def pause_client(client_id: str) -> dict:
         await broadcast_client_state_change(client_id, status_update)
         return {
             "status": "success",
-            "message": f"Pause command processed for client {client_id}. State updated and broadcasted."
+            "message": f"Pause command processed for client {client_id}. State updated and broadcasted.",
         }
     # This 'else' corresponds to 'if not target_client_exists_in_redis', which should have been handled by the error return above.
     # However, to be safe, we ensure a dictionary is returned.
     return {
         "status": "error",
-        "message": f"Pause command for client {client_id} could not be processed as client was not found in an active state."
+        "message": f"Pause command for client {client_id} could not be processed as client was not found in an active state.",
     }
 
 
@@ -761,7 +819,7 @@ async def resume_client(client_id: str) -> dict:
             )
             return {
                 "status": "error",
-                "message": f"Client {client_id} not found or already disconnected."
+                "message": f"Client {client_id} not found or already disconnected.",
             }
         # If client_info.client_state is already 'running', this is a redundant call but harmless.
         logger.warning(
@@ -785,7 +843,7 @@ async def resume_client(client_id: str) -> dict:
                 del worker_connections[client_id]
             return {
                 "status": "error",
-                "message": f"Error sending resume command to client {client_id}: {e}"
+                "message": f"Error sending resume command to client {client_id}: {e}",
             }
 
     status_update = {"client_state": "running"}
@@ -797,16 +855,16 @@ async def resume_client(client_id: str) -> dict:
         if websocket_warning:
             return {
                 "status": "warning",
-                "message": f"Resume command processed for client {client_id}. Client not actively connected via WebSocket, but state updated and broadcasted."
+                "message": f"Resume command processed for client {client_id}. Client not actively connected via WebSocket, but state updated and broadcasted.",
             }
         return {
             "status": "success",
-            "message": f"Resume command processed for client {client_id}. State updated and broadcasted."
+            "message": f"Resume command processed for client {client_id}. State updated and broadcasted.",
         }
     # This 'else' corresponds to 'if not target_client_exists_in_redis'.
     return {
         "status": "error",
-        "message": f"Resume command for client {client_id} could not be processed as client was not found in an active state."
+        "message": f"Resume command for client {client_id} could not be processed as client was not found in an active state.",
     }
 
 

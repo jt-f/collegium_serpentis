@@ -45,7 +45,9 @@ WEBSOCKET_ENDPOINT_PATH = "/ws"
 FRONTEND_BUILD_DIR = (
     "static/frontend"  # Relative to the project root where server is run
 )
-DISCONNECT_CLIENT_ENDPOINT_PATH = "/clients/{client_id}/disconnect"  # Path for disconnecting a client
+DISCONNECT_CLIENT_ENDPOINT_PATH = (
+    "/clients/{client_id}/disconnect"  # Path for disconnecting a client
+)
 
 # --- CORS Configuration ---
 CORS_ALLOWED_ORIGINS = [

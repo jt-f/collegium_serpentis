@@ -731,12 +731,12 @@ class ConnectionManager:
     ) -> None:
         """Handle chat messages from frontend clients."""
         logger.info(f"Received chat message from frontend client {client_id}")
-        
+
         # Extract message content
         chat_content = message.get("message", "")
         message_timestamp = message.get("timestamp")
         message_id = message.get("message_id")
-        
+
         if not chat_content.strip():
             logger.warning(f"Empty chat message received from client {client_id}")
             error_response = ChatAckMessage(
@@ -748,12 +748,12 @@ class ConnectionManager:
             )
             await websocket.send_text(error_response.model_dump_json())
             return
-        
+
         # Log the message flow
         logger.info(
             f"Chat message from {client_id}: {chat_content[:100]}{'...' if len(chat_content) > 100 else ''}"
         )
-        
+
         # Create acknowledgment
         ack_response = ChatAckMessage(
             client_id=client_id,
@@ -762,7 +762,7 @@ class ConnectionManager:
             timestamp=message_timestamp or datetime.now(UTC).isoformat(),
             redis_status=redis_manager.get_redis_status(),
         )
-        
+
         # Send acknowledgment back to sender
         await websocket.send_text(ack_response.model_dump_json())
         logger.info(f"Sent chat acknowledgment to client {client_id}")

@@ -1,15 +1,15 @@
 """Tests for WebSocket message schemas."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC
 from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
 from src.shared.schemas.websocket import (
-    ChatMessage,
     ChatAckMessage,
+    ChatMessage,
     ClientMessage,
     ServerMessage,
 )
@@ -23,9 +23,9 @@ class TestChatMessage:
         message = ChatMessage(
             client_id="frontend1",
             message="Hello world",
-            timestamp="2024-01-01T10:00:00Z"
+            timestamp="2024-01-01T10:00:00Z",
         )
-        
+
         assert message.type == "chat"
         assert message.client_id == "frontend1"
         assert message.message == "Hello world"
@@ -33,22 +33,21 @@ class TestChatMessage:
 
     def test_chat_message_auto_timestamp(self):
         """Test automatic timestamp generation."""
-        with patch('src.shared.schemas.websocket.datetime') as mock_datetime:
-            mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T12:00:00Z"
-            mock_datetime.UTC = UTC
-            
-            message = ChatMessage(
-                client_id="frontend1",
-                message="Hello world"
+        with patch("src.shared.schemas.websocket.datetime") as mock_datetime:
+            mock_datetime.now.return_value.isoformat.return_value = (
+                "2024-01-01T12:00:00Z"
             )
-            
+            mock_datetime.UTC = UTC
+
+            message = ChatMessage(client_id="frontend1", message="Hello world")
+
             assert message.timestamp == "2024-01-01T12:00:00Z"
 
     def test_chat_message_missing_required_fields(self):
         """Test validation error when required fields are missing."""
         with pytest.raises(ValidationError) as exc_info:
             ChatMessage(message="Hello world")  # Missing client_id
-        
+
         errors = exc_info.value.errors()
         assert len(errors) == 1
         assert errors[0]["type"] == "missing"
@@ -56,7 +55,7 @@ class TestChatMessage:
 
         with pytest.raises(ValidationError) as exc_info:
             ChatMessage(client_id="frontend1")  # Missing message
-        
+
         errors = exc_info.value.errors()
         assert len(errors) == 1
         assert errors[0]["type"] == "missing"
@@ -64,11 +63,8 @@ class TestChatMessage:
 
     def test_chat_message_empty_message_allowed(self):
         """Test that empty message content is allowed."""
-        message = ChatMessage(
-            client_id="frontend1",
-            message=""
-        )
-        
+        message = ChatMessage(client_id="frontend1", message="")
+
         assert message.message == ""
 
     def test_chat_message_serialization(self):
@@ -76,12 +72,12 @@ class TestChatMessage:
         message = ChatMessage(
             client_id="frontend1",
             message="Hello world",
-            timestamp="2024-01-01T10:00:00Z"
+            timestamp="2024-01-01T10:00:00Z",
         )
-        
+
         json_str = message.model_dump_json()
         data = json.loads(json_str)
-        
+
         assert data["type"] == "chat"
         assert data["client_id"] == "frontend1"
         assert data["message"] == "Hello world"
@@ -89,22 +85,19 @@ class TestChatMessage:
 
     def test_chat_message_type_literal(self):
         """Test that type field is correctly set as literal."""
-        message = ChatMessage(
-            client_id="frontend1",
-            message="Hello world"
-        )
-        
+        message = ChatMessage(client_id="frontend1", message="Hello world")
+
         # Type should be automatically set to "chat"
         assert message.type == "chat"
-        
+
         # Should not be able to change it via model_dump and reload
         data = message.model_dump()
         data["type"] = "other"
-        
+
         # Creating new instance should fail with validation error
         with pytest.raises(ValidationError) as exc_info:
             ChatMessage.model_validate(data)
-        
+
         errors = exc_info.value.errors()
         assert len(errors) == 1
         assert errors[0]["type"] == "literal_error"
@@ -121,9 +114,9 @@ class TestChatAckMessage:
             original_message="Hello world",
             message_id="msg123",
             timestamp="2024-01-01T10:00:00Z",
-            redis_status="connected"
+            redis_status="connected",
         )
-        
+
         assert message.type == "chat_ack"
         assert message.client_id == "frontend1"
         assert message.original_message == "Hello world"
@@ -137,9 +130,9 @@ class TestChatAckMessage:
             client_id="frontend1",
             original_message="Hello world",
             timestamp="2024-01-01T10:00:00Z",
-            redis_status="connected"
+            redis_status="connected",
         )
-        
+
         assert message.message_id is None
 
     def test_chat_ack_message_missing_required_fields(self):
@@ -148,9 +141,9 @@ class TestChatAckMessage:
             ChatAckMessage(
                 original_message="Hello world",
                 timestamp="2024-01-01T10:00:00Z",
-                redis_status="connected"
+                redis_status="connected",
             )  # Missing client_id
-        
+
         errors = exc_info.value.errors()
         assert any(error["loc"] == ("client_id",) for error in errors)
 
@@ -161,12 +154,12 @@ class TestChatAckMessage:
             original_message="Hello world",
             message_id="msg123",
             timestamp="2024-01-01T10:00:00Z",
-            redis_status="connected"
+            redis_status="connected",
         )
-        
+
         json_str = message.model_dump_json()
         data = json.loads(json_str)
-        
+
         assert data["type"] == "chat_ack"
         assert data["client_id"] == "frontend1"
         assert data["original_message"] == "Hello world"
@@ -180,11 +173,8 @@ class TestMessageUnions:
 
     def test_client_message_includes_chat(self):
         """Test that ChatMessage is included in ClientMessage union."""
-        chat_message = ChatMessage(
-            client_id="frontend1",
-            message="Hello world"
-        )
-        
+        chat_message = ChatMessage(client_id="frontend1", message="Hello world")
+
         # Should be able to use as ClientMessage
         client_msg: ClientMessage = chat_message
         assert client_msg.type == "chat"
@@ -195,9 +185,9 @@ class TestMessageUnions:
             client_id="frontend1",
             original_message="Hello world",
             timestamp="2024-01-01T10:00:00Z",
-            redis_status="connected"
+            redis_status="connected",
         )
-        
+
         # Should be able to use as ServerMessage
         server_msg: ServerMessage = chat_ack
         assert server_msg.type == "chat_ack"
@@ -208,9 +198,9 @@ class TestMessageUnions:
             "type": "chat",
             "client_id": "frontend1",
             "message": "Hello world",
-            "timestamp": "2024-01-01T10:00:00Z"
+            "timestamp": "2024-01-01T10:00:00Z",
         }
-        
+
         message = ChatMessage.model_validate(data)
         assert message.type == "chat"
         assert message.client_id == "frontend1"
@@ -223,10 +213,10 @@ class TestMessageUnions:
             "client_id": "frontend1",
             "original_message": "Hello world",
             "timestamp": "2024-01-01T10:00:00Z",
-            "redis_status": "connected"
+            "redis_status": "connected",
         }
-        
+
         message = ChatAckMessage.model_validate(data)
         assert message.type == "chat_ack"
         assert message.client_id == "frontend1"
-        assert message.original_message == "Hello world" 
+        assert message.original_message == "Hello world"
