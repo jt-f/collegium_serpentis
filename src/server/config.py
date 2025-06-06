@@ -45,6 +45,7 @@ WEBSOCKET_ENDPOINT_PATH = "/ws"
 FRONTEND_BUILD_DIR = (
     "static/frontend"  # Relative to the project root where server is run
 )
+DISCONNECT_CLIENT_ENDPOINT_PATH = "/clients/{client_id}/disconnect"  # Path for disconnecting a client
 
 # --- CORS Configuration ---
 CORS_ALLOWED_ORIGINS = [
@@ -109,6 +110,8 @@ MSG_TYPE_MESSAGE_PROCESSED = (
 MSG_TYPE_MESSAGE_RECEIPT_UNKNOWN = "message_receipt_unknown"  # Server -> Client: If server doesn't understand a message
 MSG_TYPE_ERROR = "error"  # Server -> Client: Generic error message
 MSG_TYPE_SYSTEM = "system_message"  # Server -> Client: General system info/broadcast
+MSG_TYPE_CHAT = "chat"  # Frontend -> Server: Chat message
+MSG_TYPE_CHAT_ACK = "chat_ack"  # Server -> Frontend: Chat message acknowledgment
 
 # Message types primarily initiated by clients
 MSG_TYPE_REGISTER = "register"  # Client -> Server: Initial registration message

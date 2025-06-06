@@ -11,6 +11,7 @@ from src.server.message_validation import validate_registration_message
 from src.server.redis_manager import redis_manager
 from src.shared.schemas.websocket import (
     AllClientsUpdateMessage,
+    ChatAckMessage,
     ClientStatus,
     ClientStatusUpdateMessage,
     CommandMessage,
@@ -449,6 +450,11 @@ class ConnectionManager:
             ):  # Handle heartbeat
                 await self._handle_heartbeat_message(client_id, message)
             elif (
+                message_type == config.MSG_TYPE_CHAT
+                and client_role == config.CLIENT_ROLE_FRONTEND
+            ):  # Handle chat message
+                await self._handle_chat_message(message, websocket, client_id)
+            elif (
                 client_role != config.CLIENT_ROLE_FRONTEND
                 and message_type == config.MSG_TYPE_STATUS
             ):  # Worker status update
@@ -719,6 +725,47 @@ class ConnectionManager:
             client_id=client_id,
         )
         await websocket.send_text(unknown_msg_response.model_dump_json())
+
+    async def _handle_chat_message(
+        self, message: dict, websocket: WebSocket, client_id: str
+    ) -> None:
+        """Handle chat messages from frontend clients."""
+        logger.info(f"Received chat message from frontend client {client_id}")
+        
+        # Extract message content
+        chat_content = message.get("message", "")
+        message_timestamp = message.get("timestamp")
+        message_id = message.get("message_id")
+        
+        if not chat_content.strip():
+            logger.warning(f"Empty chat message received from client {client_id}")
+            error_response = ChatAckMessage(
+                client_id=client_id,
+                original_message="",
+                message_id=message_id,
+                timestamp=datetime.now(UTC).isoformat(),
+                redis_status=redis_manager.get_redis_status(),
+            )
+            await websocket.send_text(error_response.model_dump_json())
+            return
+        
+        # Log the message flow
+        logger.info(
+            f"Chat message from {client_id}: {chat_content[:100]}{'...' if len(chat_content) > 100 else ''}"
+        )
+        
+        # Create acknowledgment
+        ack_response = ChatAckMessage(
+            client_id=client_id,
+            original_message=chat_content,
+            message_id=message_id,
+            timestamp=message_timestamp or datetime.now(UTC).isoformat(),
+            redis_status=redis_manager.get_redis_status(),
+        )
+        
+        # Send acknowledgment back to sender
+        await websocket.send_text(ack_response.model_dump_json())
+        logger.info(f"Sent chat acknowledgment to client {client_id}")
 
     async def pause_client(
         self, target_client_id: str, originating_client_id: str | None = None

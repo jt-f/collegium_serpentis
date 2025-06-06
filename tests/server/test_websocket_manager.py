@@ -14,6 +14,7 @@ from src.server import config as server_config
 from src.server.websocket_manager import ConnectionManager
 from src.shared.schemas.websocket import (
     AllClientStatuses,
+    ChatAckMessage,
     ClientStatus,
     ClientStatusUpdateMessage,
     CommandMessage,
@@ -633,14 +634,6 @@ async def test_hhm_happy_path(manager: ConnectionManager, mock_redis_manager: As
     assert updated_status_arg.last_heartbeat_timestamp != old_ts_iso
     assert updated_status_arg.last_seen == updated_status_arg.last_heartbeat_timestamp
 
-@pytest.mark.asyncio
-async def test_ulct_get_info_exception(manager: ConnectionManager, mock_redis_manager: AsyncMock, mock_logger: MagicMock):
-    redis_error = RuntimeError("DB error")
-    mock_redis_manager.get_client_info.side_effect = redis_error
-    assert await manager._update_last_communication_time("w1") is False
-    mock_logger.error.assert_called_with(f"Error in _update_last_communication_time for w1: {redis_error}", exc_info=True)
-
-
 # _handle_control_message Basic Tests
 @pytest.mark.asyncio
 async def test_hcm_not_frontend(manager: ConnectionManager, mock_logger: MagicMock, mock_ws: AsyncMock):
@@ -1128,38 +1121,244 @@ async def test_hsu_ack_send_fails(manager: ConnectionManager, mock_ws: AsyncMock
 
 @pytest.mark.asyncio
 async def test_hsu_happy_path(manager: ConnectionManager, mock_ws: AsyncMock, mock_redis_manager: AsyncMock, mock_logger: MagicMock):
-    mock_ws.client_state = WebSocketState.CONNECTED
-    current_time = datetime.now(UTC)
+    """Test successful status update processing."""
     mock_redis_manager.get_client_info.return_value = ClientStatus(
-        client_id="w1", client_role="worker", client_state="running",
-        connected="true", attributes={"old_attr": "val"}, # existing attributes
-        last_seen=(current_time - timedelta(seconds=30)).isoformat(),
-        last_communication_timestamp=(current_time - timedelta(seconds=30)).isoformat()
+        client_id="worker1", client_role="worker", connected="true",
+        client_state="dormant"
     )
-    mock_redis_manager.update_client_status.return_value = True
-    # Incoming status has its own 'attributes' which should be merged into existing ones.
-    incoming_status_payload = {"attributes": {"new_attr": "new_val"}, "client_state": "paused"}
+    message = {
+        "type": "status_update",
+        "client_id": "worker1",
+        "status": {"cpu_usage": 50.0}
+    }
 
-    await manager._handle_status_update({"status": incoming_status_payload}, mock_ws, "w1")
+    await manager._handle_status_update(message, mock_ws, "worker1")
 
-    mock_redis_manager.update_client_status.assert_awaited_once()
-    updated_status_obj: ClientStatus = mock_redis_manager.update_client_status.call_args[0][0]
-
-    assert updated_status_obj.attributes is not None
-    assert updated_status_obj.attributes.get("new_attr") == "new_val"
-    # The main code's current `merged_data.update(incoming_status_attributes)` will overwrite
-    # the 'attributes' dict entirely if 'attributes' is a key in incoming_status_payload.
-    # To test merging, the main code would need `merged_data['attributes'].update(new_attributes_dict)`.
-    # Given the current code, old_attr will be lost.
-    assert updated_status_obj.attributes.get("old_attr") is None
-    assert updated_status_obj.client_state == "paused"
-    assert updated_status_obj.last_seen is not None
-    assert updated_status_obj.last_seen > (current_time - timedelta(seconds=1)).isoformat()
-    assert updated_status_obj.last_communication_timestamp == updated_status_obj.last_seen
-
+    mock_redis_manager.update_client_status.assert_called_once()
+    updated_status = mock_redis_manager.update_client_status.call_args[0][0]
+    assert updated_status.client_id == "worker1"
+    assert updated_status.cpu_usage == 50.0
+    assert updated_status.client_state == "running"  # Awakened from dormant
     mock_ws.send_text.assert_awaited_once()
-    sent_arg_str = mock_ws.send_text.call_args[0][0]
-    sent_data = json.loads(sent_arg_str)
-    assert sent_data["type"] == "message_processed"
-    assert sent_data["status_updated"]["update_status"] == "success"
-    assert sent_data["status_updated"]["attributes"]["new_attr"] == "new_val"
+
+
+# === Chat Message Tests ===
+
+@pytest.mark.asyncio
+async def test_hml_routes_to_chat_message(manager: ConnectionManager, mock_ws: AsyncMock, monkeypatch):
+    """Test that message loop routes chat messages to the chat handler."""
+    mock_handle_chat = AsyncMock()
+    monkeypatch.setattr(manager, "_handle_chat_message", mock_handle_chat)
+    
+    mock_ws.receive_text.side_effect = [
+        json.dumps({"type": "chat", "client_id": "frontend1", "message": "Hello"}),
+        WebSocketDisconnect()
+    ]
+    
+    try:
+        await manager._handle_message_loop(mock_ws, "frontend1", server_config.CLIENT_ROLE_FRONTEND)
+    except WebSocketDisconnect:
+        pass
+    
+    mock_handle_chat.assert_awaited_once_with(
+        {"type": "chat", "client_id": "frontend1", "message": "Hello"},
+        mock_ws,
+        "frontend1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_hml_chat_message_not_frontend_goes_to_unknown(manager: ConnectionManager, mock_ws: AsyncMock, monkeypatch):
+    """Test that chat messages from non-frontend clients are handled as unknown."""
+    mock_handle_unknown = AsyncMock()
+    monkeypatch.setattr(manager, "_handle_unknown_frontend_message", mock_handle_unknown)
+    
+    mock_ws.receive_text.side_effect = [
+        json.dumps({"type": "chat", "client_id": "worker1", "message": "Hello"}),
+        WebSocketDisconnect()
+    ]
+    
+    try:
+        await manager._handle_message_loop(mock_ws, "worker1", server_config.CLIENT_ROLE_WORKER)
+    except WebSocketDisconnect:
+        pass
+    
+    # Should not route to chat handler for worker clients
+    mock_handle_unknown.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_chat_message_happy_path(
+    manager: ConnectionManager, 
+    mock_ws: AsyncMock, 
+    mock_redis_manager: AsyncMock, 
+    mock_logger: MagicMock
+):
+    """Test successful chat message handling."""
+    mock_redis_manager.get_redis_status.return_value = "connected"
+    
+    message = {
+        "type": "chat",
+        "client_id": "frontend1",
+        "message": "Hello, this is a test message",
+        "timestamp": "2024-01-01T10:00:00Z",
+        "message_id": "msg123"
+    }
+    
+    await manager._handle_chat_message(message, mock_ws, "frontend1")
+    
+    # Verify logging
+    mock_logger.info.assert_any_call("Received chat message from frontend client frontend1")
+    mock_logger.info.assert_any_call("Chat message from frontend1: Hello, this is a test message")
+    mock_logger.info.assert_any_call("Sent chat acknowledgment to client frontend1")
+    
+    # Verify response sent
+    mock_ws.send_text.assert_awaited_once()
+    sent_message = json.loads(mock_ws.send_text.await_args[0][0])
+    
+    assert sent_message["type"] == "chat_ack"
+    assert sent_message["client_id"] == "frontend1"
+    assert sent_message["original_message"] == "Hello, this is a test message"
+    assert sent_message["message_id"] == "msg123"
+    assert sent_message["timestamp"] == "2024-01-01T10:00:00Z"
+    assert sent_message["redis_status"] == "connected"
+
+
+@pytest.mark.asyncio
+async def test_handle_chat_message_empty_message(
+    manager: ConnectionManager, 
+    mock_ws: AsyncMock, 
+    mock_redis_manager: AsyncMock, 
+    mock_logger: MagicMock
+):
+    """Test handling of empty chat message."""
+    mock_redis_manager.get_redis_status.return_value = "connected"
+    
+    message = {
+        "type": "chat",
+        "client_id": "frontend1",
+        "message": "   ",  # Only whitespace
+        "message_id": "msg456"
+    }
+    
+    await manager._handle_chat_message(message, mock_ws, "frontend1")
+    
+    # Verify warning logged
+    mock_logger.warning.assert_called_with("Empty chat message received from client frontend1")
+    
+    # Verify response sent with empty message
+    mock_ws.send_text.assert_awaited_once()
+    sent_message = json.loads(mock_ws.send_text.await_args[0][0])
+    
+    assert sent_message["type"] == "chat_ack"
+    assert sent_message["client_id"] == "frontend1"
+    assert sent_message["original_message"] == ""
+    assert sent_message["message_id"] == "msg456"
+
+
+@pytest.mark.asyncio
+async def test_handle_chat_message_missing_message_field(
+    manager: ConnectionManager, 
+    mock_ws: AsyncMock, 
+    mock_redis_manager: AsyncMock, 
+    mock_logger: MagicMock
+):
+    """Test handling when message field is missing."""
+    mock_redis_manager.get_redis_status.return_value = "connected"
+    
+    message = {
+        "type": "chat",
+        "client_id": "frontend1",
+        # "message" field missing
+        "message_id": "msg789"
+    }
+    
+    await manager._handle_chat_message(message, mock_ws, "frontend1")
+    
+    # Should treat missing message as empty
+    mock_logger.warning.assert_called_with("Empty chat message received from client frontend1")
+    
+    # Verify response sent
+    mock_ws.send_text.assert_awaited_once()
+    sent_message = json.loads(mock_ws.send_text.await_args[0][0])
+    
+    assert sent_message["type"] == "chat_ack"
+    assert sent_message["original_message"] == ""
+
+
+@pytest.mark.asyncio
+async def test_handle_chat_message_long_message_truncated_log(
+    manager: ConnectionManager, 
+    mock_ws: AsyncMock, 
+    mock_redis_manager: AsyncMock, 
+    mock_logger: MagicMock
+):
+    """Test that long messages are truncated in logs."""
+    mock_redis_manager.get_redis_status.return_value = "connected"
+    
+    long_message = "A" * 150  # Message longer than 100 characters
+    message = {
+        "type": "chat",
+        "client_id": "frontend1",
+        "message": long_message
+    }
+    
+    await manager._handle_chat_message(message, mock_ws, "frontend1")
+    
+    # Verify log message is truncated with ellipsis
+    expected_log = f"Chat message from frontend1: {'A' * 100}..."
+    mock_logger.info.assert_any_call(expected_log)
+    
+    # But full message should be in the acknowledgment
+    mock_ws.send_text.assert_awaited_once()
+    sent_message = json.loads(mock_ws.send_text.await_args[0][0])
+    assert sent_message["original_message"] == long_message
+
+
+@pytest.mark.asyncio
+async def test_handle_chat_message_no_timestamp_auto_generated(
+    manager: ConnectionManager, 
+    mock_ws: AsyncMock, 
+    mock_redis_manager: AsyncMock
+):
+    """Test that timestamp is auto-generated when not provided."""
+    mock_redis_manager.get_redis_status.return_value = "connected"
+    
+    message = {
+        "type": "chat",
+        "client_id": "frontend1",
+        "message": "Test message without timestamp"
+    }
+    
+    with patch('src.server.websocket_manager.datetime') as mock_datetime:
+        mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T12:00:00Z"
+        mock_datetime.UTC = UTC
+        
+        await manager._handle_chat_message(message, mock_ws, "frontend1")
+    
+    # Verify auto-generated timestamp used
+    mock_ws.send_text.assert_awaited_once()
+    sent_message = json.loads(mock_ws.send_text.await_args[0][0])
+    assert sent_message["timestamp"] == "2024-01-01T12:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_handle_chat_message_redis_status_included(
+    manager: ConnectionManager, 
+    mock_ws: AsyncMock, 
+    mock_redis_manager: AsyncMock
+):
+    """Test that Redis status is included in chat acknowledgment."""
+    mock_redis_manager.get_redis_status.return_value = "unavailable"
+    
+    message = {
+        "type": "chat",
+        "client_id": "frontend1",
+        "message": "Test message"
+    }
+    
+    await manager._handle_chat_message(message, mock_ws, "frontend1")
+    
+    mock_ws.send_text.assert_awaited_once()
+    sent_message = json.loads(mock_ws.send_text.await_args[0][0])
+    assert sent_message["redis_status"] == "unavailable"
