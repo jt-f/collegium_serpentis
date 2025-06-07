@@ -273,6 +273,68 @@ Once the server is running (e.g., via `docker-compose up` or manually), open you
     *   Any other status details the clients might send.
 *   The dashboard refreshes automatically every 5 seconds, so you always have the latest info!
 
+## :desktop_computer: Redis Web Interface (Redis Commander)
+
+Want to peek inside Redis and see what's really happening with your data? Redis Commander gives you a beautiful web interface to explore your Redis database!
+
+### :rocket: Quick Setup
+
+1. **Install Redis Commander globally** (one-time setup):
+   ```bash
+   npm install -g redis-commander
+   ```
+
+2. **Start Redis Commander**:
+   ```bash
+   redis-commander
+   ```
+
+3. **Access the Web Interface**: Open your browser and go to:
+   ```
+   http://localhost:8081
+   ```
+
+### :eyes: What You Can Explore
+
+Once Redis Commander is running, you can browse and inspect:
+
+*   **Client Status Data**: Look for keys like `client_status:*` to see all registered clients and their current status information.
+
+*   **Chat Messages**: Browse the chat system data:
+    *   **`chat_global`**: Stream containing broadcast messages sent to all clients
+    *   **`chat_stream:{client_id}`**: Individual client message streams for direct messages
+    *   **Message History**: Click on any stream to see the full message history with timestamps
+
+*   **System Keys**: Explore other Redis data structures used by the system for client management and status tracking.
+
+*   **Real-Time Monitoring**: Watch as new data appears in real-time as clients connect, send messages, and update their status.
+
+### :gear: Advanced Usage
+
+*   **Custom Port**: If port 8081 is busy, start on a different port:
+    ```bash
+    redis-commander --port 8082
+    ```
+
+*   **Read-Only Mode**: For safe exploration without accidentally modifying data:
+    ```bash
+    redis-commander --read-only
+    ```
+
+*   **Connection Details**: By default, Redis Commander connects to `localhost:6379`. If your Redis is elsewhere:
+    ```bash
+    redis-commander --redis-host your-host --redis-port your-port
+    ```
+
+### :mag_right: Pro Tips
+
+*   **Stream Inspection**: Click on any chat stream key to see the message history - perfect for debugging chat functionality
+*   **Key Patterns**: Use the search/filter features to find specific client data or message streams
+*   **Live Updates**: Keep the interface open while testing - you'll see new keys and data appear in real-time
+*   **Message Debugging**: Great for troubleshooting why messages aren't being delivered or checking message format
+
+This tool is invaluable for understanding how your client registrations, status updates, and chat messages flow through the Redis backend!
+
 ## :sleuth_or_spy: Testing Your Setup
 
 We use `pytest` to make sure everything is working as expected.

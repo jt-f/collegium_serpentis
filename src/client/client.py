@@ -6,6 +6,7 @@ import random
 import uuid
 from datetime import UTC, datetime
 
+import redis.asyncio as redis_async
 import websockets
 from faker import Faker  # Added for realistic name generation
 from websockets import ConnectionClosed, InvalidURI
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Use environment variable with fallback for flexibility
 SERVER_URL = os.getenv("SERVER_URL", "ws://localhost:8000/ws")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 CLIENT_ID = str(uuid.uuid4())
 CLIENT_ROLE = "worker"  # Added: Define the role of this client
 CLIENT_TYPE = "python agent"  # Added: Define the type of this client
@@ -283,6 +286,10 @@ async def connect_and_send_updates():
         f"connect_and_send_updates() called. manual_disconnect_initiated={manual_disconnect_initiated}"
     )
 
+    # Initialize chat consumer
+    chat_consumer = ChatConsumer(CLIENT_ID)
+    chat_consumer_task = None
+
     while not manual_disconnect_initiated:
         print(
             f"Entering main loop iteration. manual_disconnect_initiated={manual_disconnect_initiated}"
@@ -311,16 +318,36 @@ async def connect_and_send_updates():
             }
             await send_status_message(websocket, initial_status)
 
+            # Setup chat consumer (only once per client session)
+            if chat_consumer_task is None:
+                if await chat_consumer.connect():
+                    if await chat_consumer.setup_consumer_groups():
+                        chat_consumer_task = asyncio.create_task(
+                            chat_consumer.consume_messages()
+                        )
+                        logger.info(f"Client {CLIENT_ID}: Chat consumer started")
+                    else:
+                        logger.warning(
+                            f"Client {CLIENT_ID}: Failed to setup chat consumer groups"
+                        )
+                else:
+                    logger.warning(
+                        f"Client {CLIENT_ID}: Failed to connect to Redis for chat"
+                    )
+
             # Create tasks for listening to commands and sending periodic updates
             listener_task = asyncio.create_task(listen_for_commands(websocket))
             periodic_sender_task = asyncio.create_task(
                 send_status_update_periodically(websocket)
             )
 
-            # Wait for either task to complete (or be cancelled)
-            task_results = await asyncio.gather(
-                listener_task, periodic_sender_task, return_exceptions=True
-            )
+            # Gather all tasks (including chat consumer if running)
+            tasks_to_wait = [listener_task, periodic_sender_task]
+            if chat_consumer_task and not chat_consumer_task.done():
+                tasks_to_wait.append(chat_consumer_task)
+
+            # Wait for any task to complete (or be cancelled)
+            task_results = await asyncio.gather(*tasks_to_wait, return_exceptions=True)
 
             # Handle results/exceptions from tasks
             for task_result in task_results:
@@ -459,7 +486,209 @@ async def connect_and_send_updates():
             break  # Ensure exit if disconnect was initiated
 
     print(f"Client {CLIENT_ID}: Exited main connection loop.")
+
+    # Cleanup chat consumer
+    if chat_consumer_task and not chat_consumer_task.done():
+        chat_consumer_task.cancel()
+        try:
+            await chat_consumer_task
+        except asyncio.CancelledError:
+            pass  # Expected
+
+    # Stop chat consumer with exception handling
+    try:
+        await chat_consumer.stop()
+    except (Exception, SystemExit) as e:
+        # Ignore exceptions during cleanup, especially ClientInitiatedDisconnect (which inherits from SystemExit)
+        logger.debug(f"Client {CLIENT_ID}: Exception during chat consumer cleanup: {e}")
+        pass
+
     print(f"Client {CLIENT_ID}: Shutdown complete.")
+
+
+class ChatConsumer:
+    """Redis Streams consumer for chat messages."""
+
+    def __init__(
+        self, client_id: str, redis_host: str = REDIS_HOST, redis_port: int = REDIS_PORT
+    ):
+        self.client_id = client_id
+        self.redis_host = redis_host
+        self.redis_port = redis_port
+        self.redis_conn: redis_async.Redis | None = None
+        self.is_running = False
+
+        # Stream keys
+        self.personal_stream = f"chat_stream:{client_id}"
+        self.global_stream = "chat_global"
+        self.consumer_group = "workers"
+        self.consumer_name = f"worker-{client_id}"
+
+    async def connect(self) -> bool:
+        """Connect to Redis."""
+        try:
+            self.redis_conn = redis_async.Redis(
+                host=self.redis_host, port=self.redis_port, db=0
+            )
+            await self.redis_conn.ping()
+            logger.info(
+                f"Client {self.client_id}: Connected to Redis at {self.redis_host}:{self.redis_port}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Client {self.client_id}: Failed to connect to Redis: {e}")
+            return False
+
+    async def setup_consumer_groups(self) -> bool:
+        """Set up consumer groups for streams."""
+        try:
+            # Create consumer group for personal stream (starting from newest messages)
+            try:
+                await self.redis_conn.xgroup_create(
+                    self.personal_stream, self.consumer_group, "$", mkstream=True
+                )
+                logger.info(
+                    f"Client {self.client_id}: Created consumer group for personal stream: {self.personal_stream}"
+                )
+            except Exception as e:
+                if "BUSYGROUP" in str(e):
+                    logger.debug(
+                        f"Client {self.client_id}: Consumer group already exists for personal stream: {self.personal_stream}"
+                    )
+                else:
+                    logger.warning(
+                        f"Client {self.client_id}: Failed to create consumer group for personal stream: {e}"
+                    )
+
+            # Create consumer group for global stream (starting from newest messages)
+            try:
+                await self.redis_conn.xgroup_create(
+                    self.global_stream, self.consumer_group, "$", mkstream=True
+                )
+                logger.info(
+                    f"Client {self.client_id}: Created consumer group for global stream: {self.global_stream}"
+                )
+            except Exception as e:
+                if "BUSYGROUP" in str(e):
+                    logger.debug(
+                        f"Client {self.client_id}: Consumer group already exists for global stream: {self.global_stream}"
+                    )
+                else:
+                    logger.warning(
+                        f"Client {self.client_id}: Failed to create consumer group for global stream: {e}"
+                    )
+
+            return True
+        except Exception as e:
+            logger.error(
+                f"Client {self.client_id}: Failed to setup consumer groups: {e}"
+            )
+            return False
+
+    async def consume_messages(self) -> None:
+        """Main message consumption loop."""
+        logger.info(f"Client {self.client_id}: Starting chat message consumption")
+        self.is_running = True
+
+        while self.is_running and not manual_disconnect_initiated:
+            try:
+                # Read from both personal and global streams
+                streams = {
+                    self.personal_stream: ">",  # Get new messages
+                    self.global_stream: ">",  # Get new messages
+                }
+
+                # Use XREADGROUP to consume messages
+                messages = await self.redis_conn.xreadgroup(
+                    self.consumer_group,
+                    self.consumer_name,
+                    streams,
+                    count=10,  # Read up to 10 messages at once
+                    block=1000,  # Block for 1 second if no messages
+                )
+
+                if messages:
+                    for stream_name, stream_messages in messages:
+                        stream_name = stream_name.decode("utf-8")
+                        for message_id, fields in stream_messages:
+                            message_id = message_id.decode("utf-8")
+                            await self.process_message(stream_name, message_id, fields)
+
+                            # Acknowledge the message
+                            await self.redis_conn.xack(
+                                stream_name, self.consumer_group, message_id
+                            )
+
+            except Exception as e:
+                if not manual_disconnect_initiated:
+                    logger.error(
+                        f"Client {self.client_id}: Error in chat message consumption loop: {e}"
+                    )
+                    await asyncio.sleep(5)  # Wait before retrying
+                else:
+                    break
+
+    async def process_message(
+        self, stream_name: str, message_id: str, fields: dict[bytes, bytes]
+    ) -> None:
+        """Process a received chat message."""
+        try:
+            # Decode fields from bytes to strings
+            decoded_fields = {
+                k.decode("utf-8"): v.decode("utf-8") for k, v in fields.items()
+            }
+
+            # Extract message data
+            sender_id = decoded_fields.get("client_id", "unknown")
+            message_text = decoded_fields.get("message", "")
+            target_id = decoded_fields.get("target_id", "")
+            sender_role = decoded_fields.get("sender_role", "unknown")
+            timestamp = decoded_fields.get("timestamp", datetime.now().isoformat())
+
+            # Determine message type
+            is_direct = bool(target_id and target_id != "")
+            is_personal = stream_name == self.personal_stream
+
+            # Format message for display
+            message_type = "📩 Direct" if is_direct else "📢 Broadcast"
+            stream_type = "Personal" if is_personal else "Global"
+
+            logger.info(
+                f"Client {self.client_id}: {message_type} message received on {stream_type} stream"
+            )
+            logger.info(f"  From: {sender_id} ({sender_role})")
+            logger.info(f"  Message: {message_text}")
+            logger.info(f"  Time: {timestamp}")
+            logger.info(f"  Stream: {stream_name}")
+            logger.info(f"  Message ID: {message_id}")
+            if is_direct:
+                logger.info(f"  Target: {target_id}")
+
+            # Here you can add business logic to handle the message
+            # For example:
+            # - Execute commands sent from the frontend
+            # - Update local state based on instructions
+            # - Send responses back via WebSocket or Redis
+
+        except Exception as e:
+            logger.error(
+                f"Client {self.client_id}: Error processing message {message_id}: {e}"
+            )
+
+    async def stop(self) -> None:
+        """Stop the consumer."""
+        logger.info(f"Client {self.client_id}: Stopping chat message consumption")
+        self.is_running = False
+        if self.redis_conn:
+            try:
+                await self.redis_conn.aclose()  # Use aclose() instead of deprecated close()
+                logger.info(f"Client {self.client_id}: Redis connection closed")
+            except (Exception, SystemExit) as e:
+                # Ignore exceptions during cleanup, especially ClientInitiatedDisconnect (which inherits from SystemExit)
+                logger.debug(
+                    f"Client {self.client_id}: Exception during Redis cleanup: {e}"
+                )
+                pass
 
 
 if __name__ == "__main__":

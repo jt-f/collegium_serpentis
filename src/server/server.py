@@ -37,6 +37,15 @@ async def lifespan(app: FastAPI):
     logger.info("Starting server...")
     await redis_manager.initialize()
 
+    # Initialize Redis Streams for chat messages
+    streams_initialized = await redis_manager.ensure_chat_consumer_groups()
+    if streams_initialized:
+        logger.info("Successfully initialized Redis Streams for chat messaging")
+    else:
+        logger.warning(
+            "Failed to initialize Redis Streams - chat messaging may not work properly"
+        )
+
     # Register the broadcast callback from websocket_manager with redis_manager
     if hasattr(ws_manager, "broadcast_client_status_update"):
         redis_manager.register_single_status_broadcast_callback(
@@ -308,15 +317,35 @@ async def handle_disconnect(client_id: str, websocket: WebSocket, reason: str):
     )
 
     try:
-        # Create ClientStatus object for disconnect update
+        # Get existing client info to preserve important fields like client_name
+        existing_client_info = await redis_manager.get_client_info(client_id)
+
+        # Create ClientStatus object for disconnect update, preserving key fields
+        disconnect_data = {
+            "client_id": client_id,
+            "connected": config.STATUS_VALUE_DISCONNECTED,
+            "status_detail": reason,
+            "disconnect_time": datetime.now(UTC).isoformat(),
+            "client_state": config.CLIENT_STATE_OFFLINE,
+            "client_role": client_role_for_log,  # Add the required client_role field
+        }
+
+        # Preserve important fields from existing client info
+        if existing_client_info:
+            if existing_client_info.client_name:
+                disconnect_data["client_name"] = existing_client_info.client_name
+            if existing_client_info.client_type:
+                disconnect_data["client_type"] = existing_client_info.client_type
+            if existing_client_info.ip_address:
+                disconnect_data["ip_address"] = existing_client_info.ip_address
+            if existing_client_info.hostname:
+                disconnect_data["hostname"] = existing_client_info.hostname
+            # Preserve any custom attributes
+            if existing_client_info.attributes:
+                disconnect_data["attributes"] = existing_client_info.attributes
+
         try:
-            client_status = ClientStatus(
-                client_id=client_id,
-                connected=config.STATUS_VALUE_DISCONNECTED,
-                status_detail=reason,
-                disconnect_time=datetime.now(UTC).isoformat(),
-                client_state=config.CLIENT_STATE_OFFLINE,
-            )
+            client_status = ClientStatus.model_validate(disconnect_data)
         except Exception as e:
             logger.error(f"Failed to create ClientStatus for disconnect: {e}")
             return
@@ -342,6 +371,11 @@ async def handle_disconnect(client_id: str, websocket: WebSocket, reason: str):
                     config.STATUS_KEY_CLIENT_ROLE: config.CLIENT_ROLE_WORKER,  # Add role for broadcast
                     config.STATUS_KEY_REDIS_STATUS: config.STATUS_VALUE_REDIS_UNAVAILABLE,  # Reflect Redis issue
                 }
+                # Preserve client_name if available from existing info
+                if existing_client_info and existing_client_info.client_name:
+                    minimal_disconnect_status["client_name"] = (
+                        existing_client_info.client_name
+                    )
                 await ws_manager.broadcast_to_frontends(
                     {
                         config.PAYLOAD_KEY_TYPE: config.MSG_TYPE_CLIENT_STATUS_UPDATE,

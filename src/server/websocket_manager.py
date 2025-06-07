@@ -96,6 +96,18 @@ class ConnectionManager:
                 logger.info(
                     f"Cleaned up connection for client {client_status.client_id}"
                 )
+                # Import here to avoid circular import
+                from src.server.server import handle_disconnect
+
+                # Trigger proper disconnection handling to update Redis and broadcast
+                try:
+                    await handle_disconnect(
+                        client_status.client_id, websocket, "WebSocket connection lost"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error during disconnect handling for {client_status.client_id}: {e}"
+                    )
             elif (
                 client_status is None
                 and websocket.client_state != WebSocketState.DISCONNECTED
@@ -304,6 +316,80 @@ class ConnectionManager:
         for client_id in disconnected_clients:
             self.disconnect(client_id)
 
+    async def broadcast_to_workers(
+        self, message: ServerMessage, exclude_client_id: str | None = None
+    ) -> int:
+        """Broadcast a Pydantic message object to all worker (Python) clients.
+
+        Returns the number of workers the message was sent to.
+        """
+        disconnected_clients = []
+        message_str = message.model_dump_json()
+        sent_count = 0
+
+        # Get all worker client IDs from Redis
+        for client_id in list(self.active_connections.keys()):
+            # Skip the excluded client if specified
+            if exclude_client_id and client_id == exclude_client_id:
+                continue
+
+            client_info = await redis_manager.get_client_info(client_id)
+            if client_info and client_info.client_role == config.CLIENT_ROLE_WORKER:
+                try:
+                    await self.active_connections[client_id].send_text(message_str)
+                    sent_count += 1
+                    logger.debug(f"Sent message to worker {client_id}")
+                except (WebSocketDisconnect, RuntimeError) as e:
+                    logger.warning(
+                        f"Worker client {client_id} disconnected during "
+                        f"broadcast: {e}"
+                    )
+                    disconnected_clients.append(client_id)
+                except Exception as e:
+                    logger.error(f"Error broadcasting to worker {client_id}: {e}")
+                    disconnected_clients.append(client_id)
+
+        # Clean up disconnected clients
+        for client_id in disconnected_clients:
+            self.disconnect(client_id)
+
+        return sent_count
+
+    async def send_to_specific_worker(
+        self, target_client_id: str, message: ServerMessage
+    ) -> bool:
+        """Send a message to a specific worker client.
+
+        Returns True if sent successfully, False otherwise.
+        """
+        if target_client_id not in self.active_connections:
+            logger.warning(f"Worker {target_client_id} not in active connections")
+            return False
+
+        client_info = await redis_manager.get_client_info(target_client_id)
+        if not client_info or client_info.client_role != config.CLIENT_ROLE_WORKER:
+            logger.warning(
+                f"Attempted to send message to non-worker or unknown client: "
+                f"{target_client_id}"
+            )
+            return False
+
+        try:
+            message_str = message.model_dump_json()
+            await self.active_connections[target_client_id].send_text(message_str)
+            logger.debug(f"Sent message to specific worker {target_client_id}")
+            return True
+        except (WebSocketDisconnect, RuntimeError) as e:
+            logger.warning(
+                f"Worker client {target_client_id} disconnected during send: {e}"
+            )
+            self.disconnect(target_client_id)
+            return False
+        except Exception as e:
+            logger.error(f"Error sending to worker {target_client_id}: {e}")
+            self.disconnect(target_client_id)
+            return False
+
     async def broadcast_client_status_update(self, client_status: ClientStatus) -> None:
         """Constructs and broadcasts a ClientStatusUpdateMessage to all frontends."""
         if not client_status or not client_status.client_id:
@@ -443,9 +529,16 @@ class ConnectionManager:
     ) -> None:
         """Handle the main message processing loop."""
         while True:
-            data = await websocket.receive_text()
-            logger.info(f"Received data: {data}")
-            message = json.loads(data)
+            try:
+                data = await websocket.receive_text()
+                logger.info(f"Received data: {data}")
+                message = json.loads(data)
+            except WebSocketDisconnect as e:
+                logger.info(f"Client {client_id} disconnected during message loop: {e}")
+                raise  # Re-raise to trigger cleanup in handle_websocket_session
+            except Exception as e:
+                logger.error(f"Error receiving/parsing message from {client_id}: {e}")
+                raise  # Re-raise to trigger cleanup
             message_type = message.get(config.PAYLOAD_KEY_TYPE)
 
             if message_type == config.MSG_TYPE_CONTROL:
@@ -775,18 +868,54 @@ class ConnectionManager:
         await websocket.send_text(ack_response.model_dump_json())
         logger.info(f"Sent chat acknowledgment to client {client_id}")
 
-        # Create a ChatMessage for broadcasting to other frontends
-        chat_broadcast_msg = ChatMessage(
+        # Create a ChatMessage for broadcasting/routing
+        chat_message = ChatMessage(
             client_id=client_id,
             message=chat_content,
             target_id=target_id,  # Include target_id if present
             timestamp=message_timestamp or datetime.now(UTC).isoformat(),
         )
 
-        # Broadcast chat message to other frontends (excluding the sender)
-        await self.broadcast_to_frontends(
-            chat_broadcast_msg, exclude_client_id=client_id
-        )
+        # Route message to Python workers via Redis Streams
+        message_data = {
+            "type": "chat",
+            "client_id": client_id,
+            "message": chat_content,
+            "target_id": target_id or "",  # Empty string if None for Redis
+            "sender_role": "frontend",  # Identify the sender type
+        }
+
+        if target_id:
+            # Direct message to specific Python worker via Redis stream
+            message_id = await redis_manager.publish_chat_message_to_client(
+                target_id, message_data
+            )
+            if message_id:
+                logger.info(
+                    f"Published direct chat message from {client_id} to worker {target_id} "
+                    f"stream (message_id: {message_id})"
+                )
+            else:
+                logger.warning(
+                    f"Failed to publish direct chat message from {client_id} to worker {target_id}"
+                )
+        else:
+            # Broadcast to all Python workers via global Redis stream
+            message_id = await redis_manager.publish_chat_message_broadcast(
+                message_data
+            )
+            if message_id:
+                logger.info(
+                    f"Published broadcast chat message from {client_id} to global stream "
+                    f"(message_id: {message_id})"
+                )
+            else:
+                logger.warning(
+                    f"Failed to publish broadcast chat message from {client_id}"
+                )
+
+        # Also broadcast to other frontends for visibility (excluding the sender)
+        await self.broadcast_to_frontends(chat_message, exclude_client_id=client_id)
 
         broadcast_type = "direct message" if target_id else "broadcast message"
         logger.info(f"Broadcasted {broadcast_type} from {client_id} to other frontends")

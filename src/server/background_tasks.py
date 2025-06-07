@@ -11,10 +11,10 @@ from src.shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-CLEANUP_INTERVAL_SECONDS = 60  # Run cleanup every 60 seconds
+CLEANUP_INTERVAL_SECONDS = 10  # Run cleanup every 10 seconds (was 60)
 FRONTEND_HEARTBEAT_TIMEOUT_SECONDS = 90  # Stale if no heartbeat for 90s
-PYTHON_CLIENT_DORMANT_MINUTES = 5
-PYTHON_CLIENT_DISCONNECT_MINUTES = 60
+PYTHON_CLIENT_DORMANT_MINUTES = 1  # Mark as dormant after 1 minute (was 5)
+PYTHON_CLIENT_DISCONNECT_MINUTES = 3  # Forcibly disconnect after 3 minutes (was 60)
 
 
 async def periodic_client_cleanup_task(connection_manager_instance) -> None:
