@@ -205,7 +205,11 @@ class TestConnectAndSendUpdates:
 
         # Mock gather to simulate task completion with error
         with patch("asyncio.gather") as mock_gather:
-            mock_gather.return_value = [None, ValueError("Test error")]
+
+            async def mock_gather_func(*args, **kwargs):
+                return [None, ValueError("Test error")]
+
+            mock_gather.side_effect = mock_gather_func
 
             task = asyncio.create_task(client.connect_and_send_updates())
 
@@ -253,7 +257,11 @@ class TestConnectAndSendUpdates:
 
         # Mock gather to simulate ClientInitiatedDisconnect
         with patch("asyncio.gather") as mock_gather:
-            mock_gather.return_value = [ClientInitiatedDisconnect(), None]
+
+            async def mock_gather_func(*args, **kwargs):
+                return [ClientInitiatedDisconnect(), None]
+
+            mock_gather.side_effect = mock_gather_func
 
             task = asyncio.create_task(client.connect_and_send_updates())
 

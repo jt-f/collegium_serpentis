@@ -4,6 +4,7 @@ Unit tests for the WebSocket server.
 This module tests all the WebSocket connection behavior, client status management,
 and REST API functionality, with appropriate mocking for Redis.
 """
+
 from datetime import UTC, datetime  # Added datetime, UTC
 from unittest.mock import AsyncMock
 

@@ -22,6 +22,8 @@ logger = get_logger(__name__)
 SingleClientStatusBroadcastCallable = Callable[[ClientStatus], Awaitable[None]]
 
 CLIENT_STATUS_KEY_PREFIX = "client_status:"
+CHAT_STREAM_PREFIX = "chat_stream:"  # Prefix for chat streams per client
+CHAT_GLOBAL_STREAM = "chat_global"  # Stream for broadcast messages
 
 
 class RedisManager:
@@ -446,6 +448,225 @@ class RedisManager:
             self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
                 config.STATUS_VALUE_REDIS_UNAVAILABLE
             )
+            return False
+
+    # === Redis Streams for Chat Messages ===
+
+    def _get_chat_stream_key(self, client_id: str) -> str:
+        """Get the Redis stream key for a specific client's chat messages."""
+        return f"{CHAT_STREAM_PREFIX}{client_id}"
+
+    async def publish_chat_message_to_client(
+        self, target_client_id: str, message_data: dict
+    ) -> str | None:
+        """Publish a chat message to a specific client's Redis stream.
+
+        Args:
+            target_client_id: The client ID to send the message to
+            message_data: Dictionary containing the chat message data
+
+        Returns:
+            Message ID if successful, None if failed
+        """
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning(
+                f"Redis unavailable, cannot publish chat message to {target_client_id}"
+            )
+            return None
+
+        try:
+            stream_key = self._get_chat_stream_key(target_client_id)
+
+            # Add timestamp and ensure all values are strings for Redis
+            message_with_timestamp = {
+                "timestamp": datetime.now(UTC).isoformat(),
+                **message_data,
+            }
+
+            # Convert all values to strings as Redis streams require string values
+            string_data = {k: str(v) for k, v in message_with_timestamp.items()}
+
+            message_id = await self._redis_conn.xadd(stream_key, string_data)
+            logger.info(
+                f"Published chat message to client {target_client_id} stream: {message_id}"
+            )
+            return (
+                message_id.decode("utf-8")
+                if isinstance(message_id, bytes)
+                else message_id
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to publish chat message to {target_client_id}: {e}",
+                exc_info=True,
+            )
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
+            return None
+
+    async def publish_chat_message_broadcast(self, message_data: dict) -> str | None:
+        """Publish a chat message to the global broadcast stream.
+
+        Args:
+            message_data: Dictionary containing the chat message data
+
+        Returns:
+            Message ID if successful, None if failed
+        """
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning("Redis unavailable, cannot publish broadcast chat message")
+            return None
+
+        try:
+            # Add timestamp and ensure all values are strings for Redis
+            message_with_timestamp = {
+                "timestamp": datetime.now(UTC).isoformat(),
+                **message_data,
+            }
+
+            # Convert all values to strings as Redis streams require string values
+            string_data = {k: str(v) for k, v in message_with_timestamp.items()}
+
+            message_id = await self._redis_conn.xadd(CHAT_GLOBAL_STREAM, string_data)
+            logger.info(f"Published broadcast chat message: {message_id}")
+            return (
+                message_id.decode("utf-8")
+                if isinstance(message_id, bytes)
+                else message_id
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to publish broadcast chat message: {e}", exc_info=True
+            )
+            self.status_store[config.STATUS_KEY_REDIS_STATUS] = (
+                config.STATUS_VALUE_REDIS_UNAVAILABLE
+            )
+            return None
+
+    async def create_consumer_group(
+        self, stream_key: str, group_name: str, start_id: str = "0"
+    ) -> bool:
+        """Create a consumer group for a Redis stream.
+
+        Args:
+            stream_key: The Redis stream key
+            group_name: Name of the consumer group
+            start_id: Starting message ID (default "0" for beginning)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            logger.warning(
+                f"Redis unavailable, cannot create consumer group {group_name}"
+            )
+            return False
+
+        try:
+            # Try to create the consumer group
+            await self._redis_conn.xgroup_create(
+                stream_key, group_name, start_id, mkstream=True
+            )
+            logger.info(
+                f"Created consumer group '{group_name}' for stream '{stream_key}'"
+            )
+            return True
+
+        except Exception as e:
+            # Consumer group might already exist, which is fine
+            if "BUSYGROUP" in str(e):
+                logger.debug(
+                    f"Consumer group '{group_name}' already exists for stream '{stream_key}'"
+                )
+                return True
+            else:
+                logger.error(
+                    f"Failed to create consumer group '{group_name}' for stream '{stream_key}': {e}",
+                    exc_info=True,
+                )
+                return False
+
+    async def ensure_chat_consumer_groups(self) -> bool:
+        """Ensure consumer groups exist for chat streams.
+
+        Returns:
+            True if all groups were created/verified successfully
+        """
+        success = True
+
+        # Create consumer group for global broadcast stream
+        if not await self.create_consumer_group(CHAT_GLOBAL_STREAM, "workers", "$"):
+            success = False
+
+        return success
+
+    async def get_stream_length(self, stream_key: str) -> int:
+        """Get the length of a Redis stream.
+
+        Args:
+            stream_key: The Redis stream key
+
+        Returns:
+            Stream length, or 0 if stream doesn't exist or on error
+        """
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            return 0
+
+        try:
+            length = await self._redis_conn.xlen(stream_key)
+            return length
+        except Exception as e:
+            logger.error(f"Failed to get stream length for {stream_key}: {e}")
+            return 0
+
+    async def cleanup_old_stream_messages(
+        self, stream_key: str, max_length: int = 1000
+    ) -> bool:
+        """Trim old messages from a Redis stream to keep it at manageable size.
+
+        Args:
+            stream_key: The Redis stream key
+            max_length: Maximum number of messages to keep
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if (
+            self.status_store[config.STATUS_KEY_REDIS_STATUS]
+            != config.STATUS_VALUE_REDIS_CONNECTED
+            or not self._redis_conn
+        ):
+            return False
+
+        try:
+            # Use XTRIM to limit stream length
+            trimmed = await self._redis_conn.xtrim(
+                stream_key, maxlen=max_length, approximate=True
+            )
+            if trimmed > 0:
+                logger.debug(f"Trimmed {trimmed} messages from stream {stream_key}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to trim stream {stream_key}: {e}")
             return False
 
 
