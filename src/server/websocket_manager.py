@@ -744,12 +744,12 @@ class ConnectionManager:
         chat_content = message.get("message", "")
         message_timestamp = message.get("timestamp")
         message_id = message.get("message_id")
+        target_id = message.get("target_id")
 
         if not chat_content.strip():
             logger.warning(f"Empty chat message received from client {client_id}")
             error_response = ChatAckMessage(
                 client_id=client_id,
-                original_message="",
                 message_id=message_id,
                 timestamp=datetime.now(UTC).isoformat(),
                 redis_status=redis_manager.get_redis_status(),
@@ -758,14 +758,14 @@ class ConnectionManager:
             return
 
         # Log the message flow
+        target_info = f" to {target_id}" if target_id else " (broadcast)"
         logger.info(
-            f"Chat message from {client_id}: {chat_content[:100]}{'...' if len(chat_content) > 100 else ''}"
+            f"Chat message from {client_id}{target_info}: {chat_content[:100]}{'...' if len(chat_content) > 100 else ''}"
         )
 
-        # Create acknowledgment
+        # Create acknowledgment (without original message text)
         ack_response = ChatAckMessage(
             client_id=client_id,
-            original_message=chat_content,
             message_id=message_id or f"ack-{datetime.now(UTC).timestamp()}",
             timestamp=message_timestamp or datetime.now(UTC).isoformat(),
             redis_status=redis_manager.get_redis_status(),
@@ -779,6 +779,7 @@ class ConnectionManager:
         chat_broadcast_msg = ChatMessage(
             client_id=client_id,
             message=chat_content,
+            target_id=target_id,  # Include target_id if present
             timestamp=message_timestamp or datetime.now(UTC).isoformat(),
         )
 
@@ -786,7 +787,9 @@ class ConnectionManager:
         await self.broadcast_to_frontends(
             chat_broadcast_msg, exclude_client_id=client_id
         )
-        logger.info(f"Broadcasted chat message from {client_id} to other frontends")
+
+        broadcast_type = "direct message" if target_id else "broadcast message"
+        logger.info(f"Broadcasted {broadcast_type} from {client_id} to other frontends")
 
     async def pause_client(
         self, target_client_id: str, originating_client_id: str | None = None

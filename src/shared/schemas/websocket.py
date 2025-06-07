@@ -45,6 +45,7 @@ class ChatMessage(WebSocketMessageBase):
     type: Literal["chat"] = "chat"
     client_id: str
     message: str
+    target_id: str | None = None  # Optional target for direct messages
     timestamp: str | None = None
 
     def model_post_init(self, __context: dict[str, Any] | None = None) -> None:
@@ -108,7 +109,6 @@ class ChatAckMessage(WebSocketMessageBase):
 
     type: Literal["chat_ack"] = "chat_ack"
     client_id: str
-    original_message: str
     message_id: str | None = None
     timestamp: str
     redis_status: str
