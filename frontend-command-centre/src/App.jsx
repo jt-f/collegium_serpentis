@@ -28,11 +28,13 @@ function App() {
     const [error, setError] = useState(null);
     const [redisStatus, setRedisStatus] = useState('unknown');
     const [wsStatus, setWsStatus] = useState('disconnected');
+    const [isRegistered, setIsRegistered] = useState(false); // Track if frontend is registered with server
     const [chatMessages, setChatMessages] = useState([
         { id: 1, sender: 'client-1', text: 'Obstacle detected at K2', timestamp: new Date().toISOString(), acknowledged: true },
         { id: 2, sender: 'Operator', text: 'Acknowledge Alpha Rover, rerouting.', timestamp: new Date().toISOString(), acknowledged: true },
         { id: 3, sender: 'client-3', text: 'Low battery warning.', timestamp: new Date().toISOString(), acknowledged: true },
     ]);
+    const [selectedTargetId, setSelectedTargetId] = useState(null); // null means 'all'
     const frontendClientId = useRef(generateFrontendClientId());
     const frontendClientName = useRef(generateFrontendClientName());
 
@@ -40,10 +42,27 @@ function App() {
     const reconnectInterval = useRef(null);
 
     const connectWebSocket = useCallback(() => {
-        if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
-            console.log("WebSocket already connected.");
-            return;
+        // If there's an existing WebSocket, close it first
+        if (websocket.current) {
+            if (websocket.current.readyState === WebSocket.OPEN) {
+                console.log("WebSocket already connected.");
+                return;
+            }
+            if (websocket.current.readyState === WebSocket.CONNECTING) {
+                console.log("WebSocket is already connecting, waiting...");
+                return;
+            }
+            // Close any existing connection that's in a bad state
+            try {
+                websocket.current.close();
+                websocket.current = null; // Clear reference after closing
+                console.log("Closed and cleared existing WebSocket reference");
+            } catch (e) {
+                console.warn("Error closing existing WebSocket:", e);
+                websocket.current = null; // Clear reference even if close fails
+            }
         }
+
         if (reconnectInterval.current) {
             clearInterval(reconnectInterval.current);
             reconnectInterval.current = null;
@@ -51,12 +70,20 @@ function App() {
 
         console.log("Attempting to connect to WebSocket:", WS_URL);
         setWsStatus('connecting');
+        setIsRegistered(false); // Reset registration status
         const ws = new WebSocket(WS_URL);
         websocket.current = ws;
 
         ws.onopen = () => {
-            console.log("WebSocket connected successfully to:", WS_URL);
-            setWsStatus('connected');
+            console.log("WebSocket onopen event fired for:", WS_URL);
+
+            // Verify the WebSocket is actually ready before proceeding
+            if (ws.readyState !== WebSocket.OPEN) {
+                console.error("WebSocket onopen fired but readyState is not OPEN:", ws.readyState);
+                return;
+            }
+
+            console.log("WebSocket verified as OPEN, proceeding with initialization");
             setError(null);
 
             // Clear any existing reconnect interval if connection is successful
@@ -64,6 +91,10 @@ function App() {
                 clearInterval(reconnectInterval.current);
                 reconnectInterval.current = null;
             }
+
+            // Set status immediately since we've verified the connection is open
+            setWsStatus('connected');
+            console.log("WebSocket status set to connected");
 
             ws.send(JSON.stringify({
                 client_id: frontendClientId.current,
@@ -143,8 +174,15 @@ function App() {
                     setRedisStatus(message.redis_status);
                 }
 
-                if (message.result === 'message_processed' && message.client_id === frontendClientId.current) {
+                if (message.type === 'registration_complete' && message.client_id === frontendClientId.current) {
+                    console.log("Frontend registration completed by server.");
+                    setIsRegistered(true); // Mark as fully registered
+                    console.log("🎉 Frontend is now fully ready to send chat messages!");
+                    if (message.redis_status) setRedisStatus(message.redis_status);
+                } else if (message.result === 'message_processed' && message.client_id === frontendClientId.current) {
                     console.log("Frontend registration acknowledged by server.");
+                    setIsRegistered(true); // Fallback for older server versions
+                    console.log("🎉 Frontend is now fully ready to send chat messages!");
                     if (message.redis_status) setRedisStatus(message.redis_status);
                 } else if (message.type === 'control_response') {
                     console.log('Control response received:', message);
@@ -176,6 +214,7 @@ function App() {
                         id: `${message.client_id}-${message.timestamp}`, // Unique ID based on sender and timestamp
                         sender: message.client_id,
                         text: message.message, // Use 'text' to match own messages
+                        target_id: message.target_id, // Include target_id if present
                         timestamp: message.timestamp,
                         acknowledged: true, // Incoming messages are already "acknowledged" by nature
                         isOwnMessage: false // Flag to differentiate from own messages
@@ -196,6 +235,13 @@ function App() {
         ws.onclose = (event) => {
             console.warn("WebSocket disconnected:", event.code, event.reason);
             setWsStatus('disconnected');
+            setIsRegistered(false); // Reset registration status on disconnect
+
+            // Clear the WebSocket reference when it closes
+            if (websocket.current === ws) {
+                websocket.current = null;
+                console.log("Cleared WebSocket reference after close");
+            }
 
             // Stop heartbeats
             if (ws.heartbeatInterval) {
@@ -221,12 +267,19 @@ function App() {
         ws.onerror = (error) => {
             console.error('WebSocket error:', error);
             setWsStatus('error');
-            websocket.current = null;
+            setIsRegistered(false); // Reset registration on error
+
+            // Clear the WebSocket reference on error
+            if (websocket.current === ws) {
+                websocket.current = null;
+                console.log("Cleared WebSocket reference after error");
+            }
         };
     }, [WS_URL]); // Added WS_URL as it's an external variable used inside.
 
     // Effect to initiate WebSocket connection on mount
     useEffect(() => {
+        console.log("Component mounted, initiating WebSocket connection");
         connectWebSocket();
 
         // Cleanup function to close WebSocket when component unmounts
@@ -239,7 +292,7 @@ function App() {
                 clearInterval(reconnectInterval.current);
             }
         };
-    }, [connectWebSocket]); // Dependency on connectWebSocket (which is memoized)
+    }, [connectWebSocket]); // Restore dependency on connectWebSocket
 
     // Effect for HTTP Polling (as a fallback or for initial load)
     useEffect(() => {
@@ -287,6 +340,23 @@ function App() {
         return () => clearInterval(intervalId);
     }, [wsStatus, isLoading]); // Re-evaluate polling based on wsStatus and isLoading
 
+    // Health check effect to detect WebSocket state mismatches
+    useEffect(() => {
+        const healthCheckInterval = setInterval(() => {
+            // Only check if UI thinks we're connected
+            if (wsStatus === 'connected' || isRegistered) {
+                if (!websocket.current || websocket.current.readyState !== WebSocket.OPEN) {
+                    console.warn("🏥 Health check failed: WebSocket state mismatch detected");
+                    setWsStatus('disconnected');
+                    setIsRegistered(false);
+                    connectWebSocket();
+                }
+            }
+        }, 5000); // Check every 5 seconds
+
+        return () => clearInterval(healthCheckInterval);
+    }, [wsStatus, isRegistered, connectWebSocket]);
+
     // Client Action Handlers
     const handleClientAction = (clientId, action) => {
         console.log(`Attempting to ${action} client via WebSocket: ${clientId}`);
@@ -317,7 +387,7 @@ function App() {
     };
 
     // Chat Message Handler
-    const sendChatMessage = (messageText) => {
+    const sendChatMessage = (messageText, targetId = null) => {
         if (!messageText.trim()) return;
 
         const messageId = `chat-${Date.now()}-${generateRandomString(6)}`;
@@ -331,18 +401,44 @@ function App() {
             text: messageText.trim(),
             timestamp: timestamp,
             acknowledged: false,
-            isOwnMessage: true
+            isOwnMessage: true,
+            targetId: targetId // Store target for display purposes
         };
 
         setChatMessages(prevMessages => [...prevMessages, newMessage]);
 
-        if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
+        // Enhanced debugging for WebSocket state
+        const wsExists = !!websocket.current;
+        const wsReadyState = websocket.current?.readyState;
+        const wsReadyStateString = wsReadyState === WebSocket.CONNECTING ? 'CONNECTING' :
+            wsReadyState === WebSocket.OPEN ? 'OPEN' :
+                wsReadyState === WebSocket.CLOSING ? 'CLOSING' :
+                    wsReadyState === WebSocket.CLOSED ? 'CLOSED' : 'UNKNOWN';
+
+        console.log(`Chat send attempt - wsExists: ${wsExists}, readyState: ${wsReadyState} (${wsReadyStateString}), wsStatus: ${wsStatus}, isRegistered: ${isRegistered}`);
+
+        // Detect state mismatch: UI thinks we're connected but WebSocket is null/closed
+        if ((wsStatus === 'connected' || isRegistered) && (!websocket.current || websocket.current.readyState !== WebSocket.OPEN)) {
+            console.warn("🚨 State mismatch detected! UI thinks connected but WebSocket is not ready. Attempting reconnection...");
+            setWsStatus('disconnected');
+            setIsRegistered(false);
+            connectWebSocket();
+        }
+
+        // Additional safety check: verify all conditions are met in real-time
+        const canSendNow = websocket.current &&
+            websocket.current.readyState === WebSocket.OPEN &&
+            isRegistered &&
+            wsStatus === 'connected';
+
+        if (canSendNow) {
             const chatMessage = {
                 type: "chat",
                 client_id: frontendClientId.current,
                 message: messageText.trim(),
                 message_id: messageId,
-                timestamp: timestamp
+                timestamp: timestamp,
+                ...(targetId && { target_id: targetId }) // Include target_id only if specified
             };
 
             try {
@@ -361,7 +457,13 @@ function App() {
                 setError(`Failed to send chat message: WebSocket error.`);
             }
         } else {
-            console.error(`Cannot send chat message: WebSocket is not connected.`);
+            const errorReason = !websocket.current ? 'WebSocket reference is null' :
+                websocket.current.readyState !== WebSocket.OPEN ? `WebSocket state is ${wsReadyStateString} (not OPEN)` :
+                    wsStatus !== 'connected' ? `UI status is '${wsStatus}' (not 'connected')` :
+                        !isRegistered ? 'Frontend not yet registered with server' :
+                            'Unknown error';
+
+            console.error(`Cannot send chat message: ${errorReason}.`);
             // Mark message as failed
             setChatMessages(prevMessages =>
                 prevMessages.map(msg =>
@@ -370,11 +472,22 @@ function App() {
                         : msg
                 )
             );
-            setError('WebSocket is not connected. Please check connection and try again.');
+            setError(`${errorReason}. Please wait and try again.`);
+
             if (!websocket.current || websocket.current.readyState === WebSocket.CLOSED) {
                 connectWebSocket(); // Attempt to reconnect if fully closed
             }
         }
+    };
+
+    // Target Selection Handler
+    const handleTargetChange = (targetId) => {
+        setSelectedTargetId(targetId);
+    };
+
+    // Handle envelope icon click in client table
+    const handleSelectForMessage = (clientId) => {
+        setSelectedTargetId(clientId);
     };
 
     return (
@@ -393,6 +506,7 @@ function App() {
                         isLoading={isLoading}
                         error={error}
                         onClientAction={handleClientAction}
+                        onSelectForMessage={handleSelectForMessage}
                     />
                 </div>
                 <div className="lg:col-span-1">
@@ -400,6 +514,10 @@ function App() {
                         messages={chatMessages}
                         onSendMessage={sendChatMessage}
                         wsStatus={wsStatus}
+                        isRegistered={isRegistered}
+                        clients={clients}
+                        selectedTargetId={selectedTargetId}
+                        onTargetChange={handleTargetChange}
                     />
                 </div>
             </div>

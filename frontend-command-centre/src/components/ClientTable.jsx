@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronUp, Smartphone, HardDrive, Cpu, MemoryStick, Wifi, AlertCircle, CheckCircle2, XCircle, PowerOff, Play, Pause, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Smartphone, HardDrive, Cpu, MemoryStick, Wifi, AlertCircle, CheckCircle2, XCircle, PowerOff, Play, Pause, X, Mail } from 'lucide-react';
 
 const getStatusClasses = (clientData) => {
   if (clientData.connected !== 'true') {
@@ -33,16 +33,24 @@ const getStatusIcon = (clientData) => {
   }
 };
 
-const ClientRow = ({ client, onClientAction }) => {
+const ClientRow = ({ client, onClientAction, onSelectForMessage }) => {
   const [expanded, setExpanded] = React.useState(false);
 
   const canPause = client.connected === 'true' && client.client_state === 'running';
   const canResume = client.connected === 'true' && client.client_state === 'paused';
   const canDisconnect = client.connected === 'true';
+  const canMessage = client.connected === 'true' && client.client_role === 'worker';
 
   const handleAction = (e, action) => {
     e.stopPropagation();
     onClientAction(client.client_id, action);
+  };
+
+  const handleSelectForMessage = (e) => {
+    e.stopPropagation();
+    if (onSelectForMessage) {
+      onSelectForMessage(client.client_id);
+    }
   };
 
   const displayName = client.client_name || client.client_id || 'N/A';
@@ -87,10 +95,20 @@ const ClientRow = ({ client, onClientAction }) => {
           {displayTime}
         </td>
         <td className="px-4 py-3 whitespace-nowrap text-right">
+          {canMessage && (
+            <button
+              onClick={handleSelectForMessage}
+              className="p-1.5 text-purple-400 hover:text-purple-300 disabled:text-slate-600"
+              aria-label={`Send message to ${client.client_id}`}
+              title="Send Direct Message"
+            >
+              <Mail size={18} />
+            </button>
+          )}
           {canPause && (
             <button
               onClick={(e) => handleAction(e, 'pause')}
-              className="p-1.5 text-yellow-400 hover:text-yellow-300 disabled:text-slate-600"
+              className="p-1.5 text-yellow-400 hover:text-yellow-300 disabled:text-slate-600 ml-1"
               aria-label={`Pause client ${client.client_id}`}
               title="Pause Client"
             >
@@ -100,7 +118,7 @@ const ClientRow = ({ client, onClientAction }) => {
           {canResume && (
             <button
               onClick={(e) => handleAction(e, 'resume')}
-              className="p-1.5 text-green-400 hover:text-green-300 disabled:text-slate-600"
+              className="p-1.5 text-green-400 hover:text-green-300 disabled:text-slate-600 ml-1"
               aria-label={`Resume client ${client.client_id}`}
               title="Resume Client"
             >
@@ -124,7 +142,7 @@ const ClientRow = ({ client, onClientAction }) => {
       </tr>
       {expanded && (
         <tr className="bg-slate-750">
-          <td colSpan={6} className="p-0">
+          <td colSpan={7} className="p-0">
             <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-700/30">
               <div className="flex items-center space-x-2 p-3 bg-slate-800 rounded-md">
                 <Cpu size={20} className="text-teal-400" />
@@ -155,7 +173,7 @@ const ClientRow = ({ client, onClientAction }) => {
   );
 };
 
-const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus, */ onClientAction }) => {
+const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus, */ onClientAction, onSelectForMessage }) => {
   if (isLoading) {
     return <p className="text-center text-slate-400 py-8">Loading client data...</p>;
   }
@@ -208,7 +226,7 @@ const ClientTable = ({ clients, isLoading, error, /* redisStatus, */ /* wsStatus
           </thead>
           <tbody className="bg-slate-800 divide-y divide-slate-700">
             {clientList.map((client) => {
-              return <ClientRow key={client.client_id} client={client} onClientAction={onClientAction} />;
+              return <ClientRow key={client.client_id} client={client} onClientAction={onClientAction} onSelectForMessage={onSelectForMessage} />;
             })}
           </tbody>
         </table>
