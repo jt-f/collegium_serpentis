@@ -28,6 +28,11 @@ function App() {
     const [error, setError] = useState(null);
     const [redisStatus, setRedisStatus] = useState('unknown');
     const [wsStatus, setWsStatus] = useState('disconnected');
+    const [chatMessages, setChatMessages] = useState([
+        { id: 1, sender: 'client-1', text: 'Obstacle detected at K2', timestamp: new Date().toISOString(), acknowledged: true },
+        { id: 2, sender: 'Operator', text: 'Acknowledge Alpha Rover, rerouting.', timestamp: new Date().toISOString(), acknowledged: true },
+        { id: 3, sender: 'client-3', text: 'Low battery warning.', timestamp: new Date().toISOString(), acknowledged: true },
+    ]);
     const frontendClientId = useRef(generateFrontendClientId());
     const frontendClientName = useRef(generateFrontendClientName());
 
@@ -151,6 +156,32 @@ function App() {
                         console.log(`Control action '${message.action}' for client '${message.target_client_id}' was successful: ${message.message}`);
                         // Optionally, show a success notification
                     }
+                } else if (message.type === 'chat_ack') {
+                    console.log('Chat acknowledgment received:', message);
+                    setChatMessages(prevMessages =>
+                        prevMessages.map(msg =>
+                            msg.id === message.message_id || (msg.tempId && msg.tempId === message.message_id)
+                                ? {
+                                    ...msg,
+                                    acknowledged: true,
+                                    timestamp: message.timestamp,
+                                    id: message.message_id || msg.id
+                                }
+                                : msg
+                        )
+                    );
+                } else if (message.type === 'chat') {
+                    console.log('Chat message received from another frontend:', message);
+                    const newIncomingMessage = {
+                        id: `${message.client_id}-${message.timestamp}`, // Unique ID based on sender and timestamp
+                        sender: message.client_id,
+                        text: message.message, // Use 'text' to match own messages
+                        timestamp: message.timestamp,
+                        acknowledged: true, // Incoming messages are already "acknowledged" by nature
+                        isOwnMessage: false // Flag to differentiate from own messages
+                    };
+                    // Add incoming chat message from other frontend to chat messages
+                    setChatMessages(prevMessages => [...prevMessages, newIncomingMessage]);
                 }
 
                 if (isLoading && (message.type === 'all_clients_update' || (message.client_id && message.status))) {
@@ -285,11 +316,66 @@ function App() {
         }
     };
 
-    const messages = [
-        { id: 1, sender: 'client-1', text: 'Obstacle detected at K2' },
-        { id: 2, sender: 'Operator', text: 'Acknowledge Alpha Rover, rerouting.' },
-        { id: 3, sender: 'client-3', text: 'Low battery warning.' },
-    ];
+    // Chat Message Handler
+    const sendChatMessage = (messageText) => {
+        if (!messageText.trim()) return;
+
+        const messageId = `chat-${Date.now()}-${generateRandomString(6)}`;
+        const timestamp = new Date().toISOString();
+
+        // Add message to local state immediately with pending status
+        const newMessage = {
+            id: messageId,
+            tempId: messageId, // Temporary ID for matching with acknowledgment
+            sender: 'Operator',
+            text: messageText.trim(),
+            timestamp: timestamp,
+            acknowledged: false,
+            isOwnMessage: true
+        };
+
+        setChatMessages(prevMessages => [...prevMessages, newMessage]);
+
+        if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
+            const chatMessage = {
+                type: "chat",
+                client_id: frontendClientId.current,
+                message: messageText.trim(),
+                message_id: messageId,
+                timestamp: timestamp
+            };
+
+            try {
+                websocket.current.send(JSON.stringify(chatMessage));
+                console.log(`Sent chat message, message_id: ${messageId}`, chatMessage);
+            } catch (err) {
+                console.error(`Error sending chat message via WebSocket:`, err);
+                // Mark message as failed
+                setChatMessages(prevMessages =>
+                    prevMessages.map(msg =>
+                        msg.tempId === messageId
+                            ? { ...msg, acknowledged: false, error: true }
+                            : msg
+                    )
+                );
+                setError(`Failed to send chat message: WebSocket error.`);
+            }
+        } else {
+            console.error(`Cannot send chat message: WebSocket is not connected.`);
+            // Mark message as failed
+            setChatMessages(prevMessages =>
+                prevMessages.map(msg =>
+                    msg.tempId === messageId
+                        ? { ...msg, acknowledged: false, error: true }
+                        : msg
+                )
+            );
+            setError('WebSocket is not connected. Please check connection and try again.');
+            if (!websocket.current || websocket.current.readyState === WebSocket.CLOSED) {
+                connectWebSocket(); // Attempt to reconnect if fully closed
+            }
+        }
+    };
 
     return (
         <Layout wsStatus={wsStatus}> {/* Pass wsStatus to Layout for potential display */}
@@ -310,7 +396,11 @@ function App() {
                     />
                 </div>
                 <div className="lg:col-span-1">
-                    <ChatWindow messages={messages} />
+                    <ChatWindow
+                        messages={chatMessages}
+                        onSendMessage={sendChatMessage}
+                        wsStatus={wsStatus}
+                    />
                 </div>
             </div>
         </Layout>

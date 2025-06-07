@@ -39,6 +39,20 @@ class ControlMessage(WebSocketMessageBase):
     message_id: str | None = None
 
 
+class ChatMessage(WebSocketMessageBase):
+    """Chat message sent by frontend clients."""
+
+    type: Literal["chat"] = "chat"
+    client_id: str
+    message: str
+    timestamp: str | None = None
+
+    def model_post_init(self, __context: dict[str, Any] | None = None) -> None:
+        """Set timestamp if not provided."""
+        if self.timestamp is None:
+            self.timestamp = datetime.now(UTC).isoformat()
+
+
 # === SERVER-TO-CLIENT MESSAGES ===
 
 
@@ -87,6 +101,17 @@ class ControlResponseMessage(WebSocketMessageBase):
     message: str
     client_id: str | None = None
     redis_status: str | None = None
+
+
+class ChatAckMessage(WebSocketMessageBase):
+    """Acknowledgment of received chat message."""
+
+    type: Literal["chat_ack"] = "chat_ack"
+    client_id: str
+    original_message: str
+    message_id: str | None = None
+    timestamp: str
+    redis_status: str
 
 
 class ClientDisconnectedMessage(WebSocketMessageBase):
@@ -208,7 +233,9 @@ class AllClientStatuses(BaseModel):
 # === TYPE UNIONS ===
 
 # Messages that can be sent from client to server
-ClientMessage = ClientRegistrationMessage | WorkerStatusUpdateMessage | ControlMessage
+ClientMessage = (
+    ClientRegistrationMessage | WorkerStatusUpdateMessage | ControlMessage | ChatMessage
+)
 
 # Messages that can be sent from server to client
 ServerMessage = (
@@ -217,6 +244,7 @@ ServerMessage = (
     | RegistrationCompleteMessage
     | MessageProcessedMessage
     | ControlResponseMessage
+    | ChatAckMessage
     | ClientDisconnectedMessage
     | ErrorMessage
     | MessageReceiptUnknownMessage
