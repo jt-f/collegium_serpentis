@@ -1,4 +1,5 @@
 # Websocket connection manager
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -32,6 +33,8 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
         self.client_contexts: dict[str, dict] = {}  # Store client_id -> context mapping
+        self._stream_monitor_task: asyncio.Task | None = None
+        self._monitor_running = False
 
     # Registers the client and starts a message loop
     async def handle_websocket_session(self, websocket: WebSocket) -> None:
@@ -833,18 +836,19 @@ class ConnectionManager:
         """Handle chat messages from frontend clients."""
         logger.info(f"Received chat message from frontend client {client_id}")
 
-        # Extract message content
+        # Extract message content using unified schema
         chat_content = message.get("message", "")
-        message_timestamp = message.get("timestamp")
+        message_timestamp = message.get("timestamp") or datetime.now(UTC).isoformat()
         message_id = message.get("message_id")
         target_id = message.get("target_id")
+        in_response_to_message_id = message.get("in_response_to_message_id")
 
         if not chat_content.strip():
             logger.warning(f"Empty chat message received from client {client_id}")
             error_response = ChatAckMessage(
                 client_id=client_id,
                 message_id=message_id,
-                timestamp=datetime.now(UTC).isoformat(),
+                timestamp=message_timestamp,
                 redis_status=redis_manager.get_redis_status(),
             )
             await websocket.send_text(error_response.model_dump_json())
@@ -852,15 +856,20 @@ class ConnectionManager:
 
         # Log the message flow
         target_info = f" to {target_id}" if target_id else " (broadcast)"
+        response_info = (
+            f" (responding to {in_response_to_message_id})"
+            if in_response_to_message_id
+            else ""
+        )
         logger.info(
-            f"Chat message from {client_id}{target_info}: {chat_content[:100]}{'...' if len(chat_content) > 100 else ''}"
+            f"Chat message from {client_id}{target_info}{response_info}: {chat_content[:100]}{'...' if len(chat_content) > 100 else ''}"
         )
 
-        # Create acknowledgment (without original message text)
+        # Create acknowledgment
         ack_response = ChatAckMessage(
             client_id=client_id,
             message_id=message_id or f"ack-{datetime.now(UTC).timestamp()}",
-            timestamp=message_timestamp or datetime.now(UTC).isoformat(),
+            timestamp=message_timestamp,
             redis_status=redis_manager.get_redis_status(),
         )
 
@@ -868,32 +877,38 @@ class ConnectionManager:
         await websocket.send_text(ack_response.model_dump_json())
         logger.info(f"Sent chat acknowledgment to client {client_id}")
 
-        # Create a ChatMessage for broadcasting/routing
+        # Create a ChatMessage for broadcasting/routing using unified schema
         chat_message = ChatMessage(
+            message_id=message_id or f"msg-{datetime.now(UTC).timestamp()}",
             client_id=client_id,
             message=chat_content,
-            target_id=target_id,  # Include target_id if present
-            timestamp=message_timestamp or datetime.now(UTC).isoformat(),
+            target_id=target_id,
+            in_response_to_message_id=in_response_to_message_id,
+            sender_role="frontend",
+            timestamp=message_timestamp,
         )
 
-        # Route message to Python workers via Redis Streams
+        # Route message to Python workers via Redis Streams using unified schema
         message_data = {
             "type": "chat",
+            "message_id": chat_message.message_id,
             "client_id": client_id,
             "message": chat_content,
             "target_id": target_id or "",  # Empty string if None for Redis
-            "sender_role": "frontend",  # Identify the sender type
+            "in_response_to_message_id": in_response_to_message_id or "",
+            "sender_role": "frontend",
+            "timestamp": message_timestamp,
         }
 
         if target_id:
             # Direct message to specific Python worker via Redis stream
-            message_id = await redis_manager.publish_chat_message_to_client(
+            redis_message_id = await redis_manager.publish_chat_message_to_client(
                 target_id, message_data
             )
-            if message_id:
+            if redis_message_id:
                 logger.info(
                     f"Published direct chat message from {client_id} to worker {target_id} "
-                    f"stream (message_id: {message_id})"
+                    f"stream (redis_message_id: {redis_message_id})"
                 )
             else:
                 logger.warning(
@@ -901,13 +916,13 @@ class ConnectionManager:
                 )
         else:
             # Broadcast to all Python workers via global Redis stream
-            message_id = await redis_manager.publish_chat_message_broadcast(
+            redis_message_id = await redis_manager.publish_chat_message_broadcast(
                 message_data
             )
-            if message_id:
+            if redis_message_id:
                 logger.info(
                     f"Published broadcast chat message from {client_id} to global stream "
-                    f"(message_id: {message_id})"
+                    f"(redis_message_id: {redis_message_id})"
                 )
             else:
                 logger.warning(
@@ -1283,6 +1298,263 @@ class ConnectionManager:
         except Exception as e:
             logger.error(
                 f"Error processing heartbeat for {client_id}: {e}", exc_info=True
+            )
+
+    async def start_stream_monitoring(self) -> None:
+        """Start monitoring Redis streams for Python client responses."""
+        if self._stream_monitor_task is None or self._stream_monitor_task.done():
+            self._monitor_running = True
+            self._stream_monitor_task = asyncio.create_task(
+                self._monitor_redis_streams()
+            )
+            logger.info("Started Redis stream monitoring for chat responses")
+
+    async def stop_stream_monitoring(self) -> None:
+        """Stop monitoring Redis streams."""
+        self._monitor_running = False
+        if self._stream_monitor_task and not self._stream_monitor_task.done():
+            self._stream_monitor_task.cancel()
+            try:
+                await self._stream_monitor_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("Stopped Redis stream monitoring")
+
+    async def _monitor_redis_streams(self) -> None:
+        """Background task to monitor Redis streams for responses from Python clients."""
+        consumer_group = "websocket_server"
+        consumer_name = "ws-manager"
+        global_stream = "chat_global"
+
+        # Set up consumer group for global stream monitoring
+        try:
+            await redis_manager.create_consumer_group(
+                global_stream, consumer_group, "$"
+            )
+        except Exception as e:
+            logger.error(f"Failed to create consumer group for stream monitoring: {e}")
+            return
+
+        logger.info("Redis stream monitoring started")
+        redis_conn = None
+
+        while self._monitor_running:
+            try:
+                # Get Redis connection (reuse if possible)
+                if redis_conn is None:
+                    redis_conn = await redis_manager._get_async_redis_connection()
+
+                # Check Redis connection health
+                try:
+                    await redis_conn.ping()
+                except Exception:
+                    logger.warning("Redis connection lost, reconnecting...")
+                    redis_conn = await redis_manager._get_async_redis_connection()
+
+                # Monitor global stream for broadcast responses
+                streams = {global_stream: ">"}
+
+                # Read from global stream
+                messages = await redis_conn.xreadgroup(
+                    consumer_group,
+                    consumer_name,
+                    streams,
+                    count=10,  # Process up to 10 messages at once
+                    block=1000,  # Block for 1 second if no messages
+                )
+
+                if messages:
+                    for stream_name, stream_messages in messages:
+                        stream_name = stream_name.decode("utf-8")
+                        for message_id, fields in stream_messages:
+                            message_id = message_id.decode("utf-8")
+
+                            # Process the message
+                            await self._process_stream_message(
+                                stream_name, message_id, fields
+                            )
+
+                            # Acknowledge the message
+                            try:
+                                await redis_conn.xack(
+                                    stream_name, consumer_group, message_id
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to ack message {message_id}: {e}"
+                                )
+
+                # Also monitor individual client streams for direct responses
+                await self._monitor_individual_streams(
+                    redis_conn, consumer_group, consumer_name
+                )
+
+            except asyncio.CancelledError:
+                logger.info("Stream monitoring cancelled")
+                break
+            except Exception as e:
+                if self._monitor_running:
+                    logger.error(f"Error in stream monitoring: {e}")
+                    redis_conn = None  # Reset connection on error
+                    await asyncio.sleep(5)  # Wait before retrying
+                else:
+                    break
+
+        # Clean up Redis connection
+        if redis_conn:
+            try:
+                await redis_conn.aclose()
+            except Exception:
+                pass
+
+    async def _monitor_individual_streams(
+        self, redis_conn, consumer_group: str, consumer_name: str
+    ) -> None:
+        """Monitor individual client streams for direct message responses."""
+        try:
+            # Get all active frontend clients to monitor their streams
+            frontend_clients = []
+            for client_id in list(self.active_connections.keys()):
+                client_info = await redis_manager.get_client_info(client_id)
+                if (
+                    client_info
+                    and client_info.client_role == config.CLIENT_ROLE_FRONTEND
+                ):
+                    frontend_clients.append(client_id)
+
+            if not frontend_clients:
+                return
+
+            # Build streams dict for individual client streams
+            individual_streams = {}
+            for client_id in frontend_clients:
+                stream_key = f"chat_stream:{client_id}"
+                individual_streams[stream_key] = ">"
+
+                # Ensure consumer group exists for this stream
+                try:
+                    await redis_manager.create_consumer_group(
+                        stream_key, consumer_group, "$"
+                    )
+                except Exception:
+                    pass  # Group might already exist
+
+            if individual_streams:
+                # Read from individual streams
+                individual_messages = await redis_conn.xreadgroup(
+                    consumer_group,
+                    consumer_name,
+                    individual_streams,
+                    count=5,  # Fewer messages per stream
+                    block=100,  # Shorter block time for individual streams
+                )
+
+                if individual_messages:
+                    for stream_name, stream_messages in individual_messages:
+                        stream_name = stream_name.decode("utf-8")
+                        for message_id, fields in stream_messages:
+                            message_id = message_id.decode("utf-8")
+
+                            # Process the message
+                            await self._process_stream_message(
+                                stream_name, message_id, fields
+                            )
+
+                            # Acknowledge the message
+                            try:
+                                await redis_conn.xack(
+                                    stream_name, consumer_group, message_id
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to ack message {message_id}: {e}"
+                                )
+
+        except Exception as e:
+            logger.warning(f"Error monitoring individual streams: {e}")
+
+    async def _process_stream_message(
+        self, stream_name: str, message_id: str, fields: dict
+    ) -> None:
+        """Process a message from Redis streams and forward to frontend clients."""
+        try:
+            # Decode fields from bytes to strings
+            decoded_fields = {
+                k.decode("utf-8"): v.decode("utf-8") for k, v in fields.items()
+            }
+
+            # Extract message data using unified schema
+            sender_id = decoded_fields.get("client_id", "unknown")
+            message_text = decoded_fields.get("message", "")
+            target_id = decoded_fields.get("target_id", "")
+            in_response_to_message_id = decoded_fields.get(
+                "in_response_to_message_id", ""
+            )
+            sender_role = decoded_fields.get("sender_role", "unknown")
+            msg_message_id = decoded_fields.get("message_id", message_id)
+            timestamp = decoded_fields.get("timestamp", datetime.now(UTC).isoformat())
+
+            # Only process messages from worker clients (responses)
+            if sender_role != "worker":
+                logger.debug(f"Skipping non-worker message from {sender_id}")
+                return
+
+            logger.info(
+                f"Processing worker response from {sender_id} on stream {stream_name}"
+            )
+
+            # Create ChatMessage for broadcasting to frontends
+            chat_message = ChatMessage(
+                message_id=msg_message_id,
+                client_id=sender_id,
+                message=message_text,
+                target_id=target_id if target_id else None,
+                in_response_to_message_id=(
+                    in_response_to_message_id if in_response_to_message_id else None
+                ),
+                sender_role="worker",
+                timestamp=timestamp,
+            )
+
+            # Determine how to route the response
+            if stream_name.startswith("chat_stream:"):
+                # Direct response to specific frontend
+                target_frontend_id = stream_name.replace("chat_stream:", "")
+                await self._send_chat_to_specific_frontend(
+                    chat_message, target_frontend_id
+                )
+            else:
+                # Global response - broadcast to all frontends
+                await self.broadcast_to_frontends(chat_message)
+
+            logger.debug(
+                f"Successfully forwarded worker response {msg_message_id} to frontends"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Error processing stream message {message_id}: {e}", exc_info=True
+            )
+
+    async def _send_chat_to_specific_frontend(
+        self, chat_message: ChatMessage, frontend_client_id: str
+    ) -> None:
+        """Send a chat message to a specific frontend client."""
+        if frontend_client_id in self.active_connections:
+            try:
+                websocket = self.active_connections[frontend_client_id]
+                await websocket.send_text(chat_message.model_dump_json())
+                logger.debug(
+                    f"Sent direct chat response to frontend {frontend_client_id}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to send chat to frontend {frontend_client_id}: {e}"
+                )
+                self.disconnect(frontend_client_id)
+        else:
+            logger.debug(
+                f"Frontend {frontend_client_id} not connected, cannot send direct response"
             )
 
 

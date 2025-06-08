@@ -481,24 +481,22 @@ class RedisManager:
         try:
             stream_key = self._get_chat_stream_key(target_client_id)
 
-            # Add timestamp and ensure all values are strings for Redis
-            message_with_timestamp = {
-                "timestamp": datetime.now(UTC).isoformat(),
-                **message_data,
-            }
+            # Ensure all values are strings for Redis streams
+            # Note: timestamp should already be in the message_data
+            string_data = {k: str(v) for k, v in message_data.items()}
 
-            # Convert all values to strings as Redis streams require string values
-            string_data = {k: str(v) for k, v in message_with_timestamp.items()}
+            # Add to Redis stream - this generates a unique message ID
+            redis_message_id = await self._redis_conn.xadd(stream_key, string_data)
+            redis_message_id_str = (
+                redis_message_id.decode("utf-8")
+                if isinstance(redis_message_id, bytes)
+                else redis_message_id
+            )
 
-            message_id = await self._redis_conn.xadd(stream_key, string_data)
             logger.info(
-                f"Published chat message to client {target_client_id} stream: {message_id}"
+                f"Published chat message to client {target_client_id} stream: {redis_message_id_str}"
             )
-            return (
-                message_id.decode("utf-8")
-                if isinstance(message_id, bytes)
-                else message_id
-            )
+            return redis_message_id_str
 
         except Exception as e:
             logger.error(
@@ -528,22 +526,22 @@ class RedisManager:
             return None
 
         try:
-            # Add timestamp and ensure all values are strings for Redis
-            message_with_timestamp = {
-                "timestamp": datetime.now(UTC).isoformat(),
-                **message_data,
-            }
+            # Ensure all values are strings for Redis streams
+            # Note: timestamp should already be in the message_data
+            string_data = {k: str(v) for k, v in message_data.items()}
 
-            # Convert all values to strings as Redis streams require string values
-            string_data = {k: str(v) for k, v in message_with_timestamp.items()}
-
-            message_id = await self._redis_conn.xadd(CHAT_GLOBAL_STREAM, string_data)
-            logger.info(f"Published broadcast chat message: {message_id}")
-            return (
-                message_id.decode("utf-8")
-                if isinstance(message_id, bytes)
-                else message_id
+            # Add to Redis stream - this generates a unique message ID
+            redis_message_id = await self._redis_conn.xadd(
+                CHAT_GLOBAL_STREAM, string_data
             )
+            redis_message_id_str = (
+                redis_message_id.decode("utf-8")
+                if isinstance(redis_message_id, bytes)
+                else redis_message_id
+            )
+
+            logger.info(f"Published broadcast chat message: {redis_message_id_str}")
+            return redis_message_id_str
 
         except Exception as e:
             logger.error(

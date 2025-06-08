@@ -59,6 +59,9 @@ async def lifespan(app: FastAPI):
             "Failed to register single status broadcast callback: method not found on ConnectionManager."
         )
 
+    # Start Redis stream monitoring for chat responses
+    await ws_manager.start_stream_monitoring()
+
     asyncio.create_task(redis_manager.health_check())
     asyncio.create_task(redis_manager.reconnector())
     asyncio.create_task(redis_manager.cleanup_disconnected_clients())
@@ -67,6 +70,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Shutting down server...")
+
+        # Stop Redis stream monitoring
+        await ws_manager.stop_stream_monitoring()
 
         connection_stats = await ws_manager.get_connection_stats()
         logger.info(

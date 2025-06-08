@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import os
 import random
 import uuid
@@ -8,14 +7,18 @@ from datetime import UTC, datetime
 
 import redis.asyncio as redis_async
 import websockets
+from dotenv import load_dotenv
 from faker import Faker  # Added for realistic name generation
+from mistralai import Mistral
 from websockets import ConnectionClosed, InvalidURI
 from websockets.protocol import State as WebSocketState  # Corrected import
 
-# Configure logging early
-logging.basicConfig(level=logging.INFO)
+from src.shared.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+# Load environment variables from .env file
+load_dotenv()
+
+logger = get_logger(__name__)
 
 # Use environment variable with fallback for flexibility
 SERVER_URL = os.getenv("SERVER_URL", "ws://localhost:8000/ws")
@@ -24,6 +27,19 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 CLIENT_ID = str(uuid.uuid4())
 CLIENT_ROLE = "worker"  # Added: Define the role of this client
 CLIENT_TYPE = "python agent"  # Added: Define the type of this client
+
+# Mistral AI configuration
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+if not MISTRAL_API_KEY:
+    logger.warning(
+        "MISTRAL_API_KEY not found in environment variables. Chat responses will be disabled."
+    )
+    MISTRAL_CLIENT = None
+else:
+    logger.info(
+        "MISTRAL_API_KEY found in environment variables. Chat responses will be enabled."
+    )
+    MISTRAL_CLIENT = Mistral(api_key=MISTRAL_API_KEY)
 
 # Initialize Faker instance
 fake = Faker()
@@ -88,7 +104,21 @@ async def send_status_message(websocket, status_attributes: dict):
         "status": status_attributes,
     }
     await websocket.send(json.dumps(message))
-    logger.info(f"Sent message: {message}")
+
+    # Log status updates with minimal info
+    if status_attributes.get("acknowledged_command"):
+        # Log acknowledgment messages
+        logger.info(
+            f"Sent command acknowledgment: {status_attributes.get('acknowledged_command')}"
+        )
+    elif "client_state" in status_attributes:
+        # Log state change messages
+        logger.info(
+            f"Sent status update: state={status_attributes.get('client_state')}"
+        )
+    else:
+        # Log periodic status updates with minimal info
+        logger.info("Sent status update: periodic")
 
 
 async def send_full_status_update(websocket):
@@ -113,18 +143,18 @@ async def listen_for_commands(websocket):
                 if (
                     message.get("result") == "message_processed"
                     or message.get("result") == "registration_complete"
+                    or message.get("type") == "message_processed"
                 ):
                     # This is just a server acknowledgment, not a command
-                    print(
-                        f"Client {CLIENT_ID}: " f"Status update acknowledged by server"
-                    )
+                    ack_type = message.get("result") or message.get("type")
+                    logger.info(f"Server acknowledgment: {ack_type}")
                     continue
 
                 # Check if this is an error message from the server
                 error_content = message.get("error")
                 if error_content is not None:
                     logger.error(
-                        f"Client {CLIENT_ID}: Received error message from server: '{error_content}'. "
+                        f"Received error message from server: '{error_content}'. "
                         f"Initiating shutdown."
                     )
                     manual_disconnect_initiated = True
@@ -135,20 +165,16 @@ async def listen_for_commands(websocket):
                 if command is None:
                     # If no command field but not an acknowledgment, log and ignore
                     if "result" not in message:
-                        print(
-                            f"Client {CLIENT_ID}: "
-                            f"Received non-command msg: {message}"
-                        )
+                        print(f"Received non-command msg: {message}")
                     continue
 
-                logger.info(f"Client {CLIENT_ID}: Received command: {command}")
+                logger.info(f"Received command: {command}")
 
                 if command == "pause":
                     if not is_paused:
                         is_paused = True
                         logger.info(
-                            f"Client {CLIENT_ID}: Pause command received. "
-                            f"Halting status updates."
+                            "Pause command received. " "Halting status updates."
                         )
                         ack_status = {
                             "client_state": "paused",
@@ -156,16 +182,12 @@ async def listen_for_commands(websocket):
                         }
                         await send_status_message(websocket, ack_status)
                     else:
-                        logger.info(
-                            f"Client {CLIENT_ID}: Already paused. "
-                            f"Pause command ignored."
-                        )
+                        logger.info("Already paused. " "Pause command ignored.")
                 elif command == "resume":
                     if is_paused:
                         is_paused = False
                         logger.info(
-                            f"Client {CLIENT_ID}: Resume command received. "
-                            f"Resuming status updates."
+                            "Resume command received. " "Resuming status updates."
                         )
                         # Send ack with current full status
                         ack_status = {
@@ -175,14 +197,9 @@ async def listen_for_commands(websocket):
                         }
                         await send_status_message(websocket, ack_status)
                     else:
-                        logger.info(
-                            f"Client {CLIENT_ID}: Already running. "
-                            f"Resume command ignored."
-                        )
+                        logger.info("Already running. " "Resume command ignored.")
                 elif command == "disconnect":
-                    logger.info(
-                        f"Client {CLIENT_ID}: Disconnect command received. Initiating shutdown."
-                    )
+                    logger.info("Disconnect command received. Initiating shutdown.")
                     manual_disconnect_initiated = True
                     ack_status = {
                         "client_state": "disconnecting",
@@ -194,58 +211,48 @@ async def listen_for_commands(websocket):
                     # We will close the websocket from connect_and_send_updates after tasks complete.
                     return  # Exit this task, gather will then complete.
                 else:
-                    logger.warning(
-                        f"Client {CLIENT_ID}: Unknown command received: {command}"
-                    )
+                    logger.warning(f"Unknown command received: {command}")
 
             except json.JSONDecodeError:
-                logger.warning(
-                    f"Client {CLIENT_ID}: Received invalid JSON: {message_json}"
-                )
+                logger.warning(f"Received invalid JSON: {message_json}")
             except Exception as e:
                 if (
                     not manual_disconnect_initiated
                 ):  # Don't log errors if we are trying to shut down
-                    logger.error(f"Client {CLIENT_ID}: Error processing command: {e}")
+                    logger.error(f"Error processing command: {e}")
                 else:
-                    logger.error(f"Client {CLIENT_ID}: Error during shutdown: {e}")
+                    logger.error(f"Error during shutdown: {e}")
                 # If a critical error occurs, might also want to set manual_disconnect_initiated = True
 
     except ConnectionClosed as e:
         if manual_disconnect_initiated:
-            logger.info(
-                f"Client {CLIENT_ID}: Connection closed during manual disconnect sequence."
-            )
+            logger.info("Connection closed during manual disconnect sequence.")
             return  # Expected if server closes after we ack disconnect command
 
         close_code = e.rcvd.code if e.rcvd else None
         close_reason = e.rcvd.reason if e.rcvd else ""
         logger.info(
-            f"Client {CLIENT_ID}: Connection closed. "
-            f"Code: {close_code}, Reason: '{close_reason}'"
+            f"Connection closed. " f"Code: {close_code}, Reason: '{close_reason}'"
         )
         if (
             close_code == 1000
         ):  # Server initiated normal disconnect (e.g. after sending command)
             if "Server initiated disconnect" in close_reason:
                 logger.info(
-                    f"Client {CLIENT_ID}: Server initiated disconnect (1000). "
-                    f"Not attempting to reconnect."
+                    "Server initiated disconnect (1000). "
+                    "Not attempting to reconnect."
                 )
                 manual_disconnect_initiated = True  # Signal to not reconnect
             else:
                 logger.info(
-                    f"Client {CLIENT_ID}: Server closed connection (1000). "
-                    f"Will attempt to reconnect."
+                    "Server closed connection (1000). " "Will attempt to reconnect."
                 )
                 # Standard delay will apply before reconnecting
         # For other close codes, the outer loop will handle reconnection attempts if flag not set.
         raise  # Re-raise to be caught by connect_and_send_updates to potentially retry
     except Exception as e:
         if not manual_disconnect_initiated:
-            logger.error(
-                f"Client {CLIENT_ID}: Unexpected error in command listener: {e}"
-            )
+            logger.error(f"Unexpected error in command listener: {e}")
             manual_disconnect_initiated = (
                 True  # Safety: signal disconnect on unknown errors in listener
             )
@@ -261,18 +268,14 @@ async def send_status_update_periodically(websocket):
                 await send_full_status_update(websocket)
             # Sleep for the defined interval before the next update or check.
             await asyncio.sleep(STATUS_INTERVAL)
-        logger.info(
-            f"Client {CLIENT_ID}: Exiting periodic sender due to disconnect signal."
-        )
+        logger.info("Exiting periodic sender due to disconnect signal.")
     except ConnectionClosed:
         if not manual_disconnect_initiated:
-            logger.warning(
-                f"Client {CLIENT_ID}: Connection lost during periodic update."
-            )
+            logger.warning("Connection lost during periodic update.")
         raise  # Re-raise for outer loop to handle (or not if flag is set)
     except Exception as e:
         if not manual_disconnect_initiated:
-            logger.error(f"Client {CLIENT_ID}: Error in periodic sender: {e}")
+            logger.error(f"Error in periodic sender: {e}")
             manual_disconnect_initiated = True  # Safety net
         raise
 
@@ -299,10 +302,10 @@ async def connect_and_send_updates():
         periodic_sender_task = None
         try:
             print(f"About to call websockets.connect({SERVER_URL})")
-            logger.info(f"Client {CLIENT_ID}: Attempting to connect to {SERVER_URL}...")
+            logger.info(f"Attempting to connect to {SERVER_URL}...")
             websocket = await websockets.connect(SERVER_URL)
             print("websockets.connect() succeeded")
-            logger.info(f"Client {CLIENT_ID}: Connected to server.")
+            logger.info("Connected to server.")
             delay = RECONNECT_DELAY  # Reset delay on successful connection
 
             # Send initial registration message
@@ -325,15 +328,11 @@ async def connect_and_send_updates():
                         chat_consumer_task = asyncio.create_task(
                             chat_consumer.consume_messages()
                         )
-                        logger.info(f"Client {CLIENT_ID}: Chat consumer started")
+                        logger.info("Chat consumer started")
                     else:
-                        logger.warning(
-                            f"Client {CLIENT_ID}: Failed to setup chat consumer groups"
-                        )
+                        logger.warning("Failed to setup chat consumer groups")
                 else:
-                    logger.warning(
-                        f"Client {CLIENT_ID}: Failed to connect to Redis for chat"
-                    )
+                    logger.warning("Failed to connect to Redis for chat")
 
             # Create tasks for listening to commands and sending periodic updates
             listener_task = asyncio.create_task(listen_for_commands(websocket))
@@ -354,16 +353,14 @@ async def connect_and_send_updates():
             for task_result in task_results:
                 if isinstance(task_result, ClientInitiatedDisconnect):
                     logger.info(
-                        f"Client {CLIENT_ID}: "
-                        f"Client initiated disconnect processed by gather result."
+                        "Client initiated disconnect processed by gather result."
                     )
                     manual_disconnect_initiated = True
                 elif isinstance(task_result, ConnectionClosed):
                     # Re-raise ConnectionClosed to be handled by main exception handler
                     # This allows 4008 (duplicate client ID) to trigger ID regeneration
                     logger.info(
-                        f"Client {CLIENT_ID}: "
-                        f"ConnectionClosed from WebSocket task, re-raising for main handler."
+                        "ConnectionClosed from WebSocket task, re-raising for main handler."
                     )
                     raise task_result
                 elif isinstance(task_result, BaseException):
@@ -374,7 +371,6 @@ async def connect_and_send_updates():
                     ):
                         # Network-related errors: attempt to reconnect WebSocket
                         logger.warning(
-                            f"Client {CLIENT_ID}: "
                             f"Network error in WebSocket task: {exc!r}. Will attempt to reconnect."
                         )
                         # Don't set manual_disconnect_initiated, let it reconnect
@@ -384,52 +380,47 @@ async def connect_and_send_updates():
                     ):
                         # Special test case handling
                         logger.info(
-                            f"Client {CLIENT_ID}: WebSocket task cancelled: {exc!r}. Assuming part of controlled shutdown or test sequence."
+                            f"WebSocket task cancelled: {exc!r}. Assuming part of controlled shutdown or test sequence."
                         )
                     else:
                         # Logic errors, validation errors, or other serious issues: shut down
                         logger.error(
-                            f"Client {CLIENT_ID}: "
                             f"Critical error in WebSocket task: {exc!r}. Signaling shutdown."
                         )
                         manual_disconnect_initiated = True
 
             # If manual_disconnect_initiated is True, break the loop after cleanup
             if manual_disconnect_initiated:
-                logger.info(f"Client {CLIENT_ID}: Breaking main loop for shutdown.")
+                logger.info("Breaking main loop for shutdown.")
                 break
 
         except InvalidURI:
-            logger.error(
-                f"Client {CLIENT_ID}: Invalid server URI: {SERVER_URL}. Exiting."
-            )
+            logger.error(f"Invalid server URI: {SERVER_URL}. Exiting.")
             manual_disconnect_initiated = True  # Prevent further attempts
             break  # Exit the loop
         except ConnectionRefusedError:
             logger.warning(
-                f"Client {CLIENT_ID}: Connection refused. "
-                f"Retrying in {delay:.2f} seconds..."
+                f"Connection refused. " f"Retrying in {delay:.2f} seconds..."
             )
         except TimeoutError:  # Add specific handling for TimeoutError
             logger.warning(
-                f"Client {CLIENT_ID}: Connection timed out during connect. "
+                f"Connection timed out during connect. "
                 f"Retrying in {delay:.2f} seconds..."
             )
         except ConnectionClosed as e:
             close_code = e.rcvd.code if e.rcvd else None
             close_reason = e.rcvd.reason if e.rcvd else ""
             logger.info(
-                f"Client {CLIENT_ID}: Connection closed. "
-                f"Code: {close_code}, Reason: '{close_reason}'"
+                f"Connection closed. " f"Code: {close_code}, Reason: '{close_reason}'"
             )
             if manual_disconnect_initiated:
-                logger.info(f"Client {CLIENT_ID}: Connection closed during shutdown.")
+                logger.info("Connection closed during shutdown.")
                 break  # Exit loop if disconnect was intentional
 
             if close_code == 4008:  # Duplicate client ID
                 logger.warning(
-                    f"Client {CLIENT_ID}: Duplicate client ID detected (4008). "
-                    f"Generating new ID and retrying immediately."
+                    "Duplicate client ID detected (4008). "
+                    "Generating new ID and retrying immediately."
                 )
                 CLIENT_ID = str(uuid.uuid4())  # Regenerate client ID
                 CLIENT_NAME = generate_realistic_name()  # Regenerate name with new ID
@@ -438,25 +429,24 @@ async def connect_and_send_updates():
             elif close_code == 1000:  # Normal closure by server
                 if "Server initiated disconnect" in close_reason:
                     logger.info(
-                        f"Client {CLIENT_ID}: Server initiated disconnect (1000). "
-                        f"Not attempting to reconnect."
+                        "Server initiated disconnect (1000). "
+                        "Not attempting to reconnect."
                     )
                     manual_disconnect_initiated = True  # Signal to not reconnect
                 else:
                     logger.info(
-                        f"Client {CLIENT_ID}: Server closed connection (1000). "
-                        f"Will attempt to reconnect."
+                        "Server closed connection (1000). " "Will attempt to reconnect."
                     )
                     # Standard delay will apply before reconnecting
             # For other close codes, standard delay applies
 
         except asyncio.CancelledError:
-            logger.info(f"Client {CLIENT_ID}: Main connection task cancelled. Exiting.")
+            logger.info("Main connection task cancelled. Exiting.")
             manual_disconnect_initiated = True
             break
         except Exception as e:
             logger.error(
-                f"Client {CLIENT_ID}: An unexpected error occurred: {e}. Signaling shutdown.",
+                f"An unexpected error occurred: {e}. Signaling shutdown.",
                 exc_info=True,
             )
             manual_disconnect_initiated = True  # Stop retrying on generic errors
@@ -477,9 +467,7 @@ async def connect_and_send_updates():
 
             # Close the websocket if it was opened and is not already closed
             if websocket and websocket.state != WebSocketState.CLOSED:
-                print(
-                    f"Client {CLIENT_ID}: Closing WebSocket connection in finally block."
-                )
+                print("Closing WebSocket connection in finally block.")
                 await websocket.close()
                 websocket = None  # Reset websocket
 
@@ -492,7 +480,7 @@ async def connect_and_send_updates():
         else:
             break  # Ensure exit if disconnect was initiated
 
-    print(f"Client {CLIENT_ID}: Exited main connection loop.")
+    print("Exited main connection loop.")
 
     # Cleanup chat consumer
     if chat_consumer_task and not chat_consumer_task.done():
@@ -507,10 +495,10 @@ async def connect_and_send_updates():
         await chat_consumer.stop()
     except (Exception, SystemExit) as e:
         # Ignore exceptions during cleanup, especially ClientInitiatedDisconnect (which inherits from SystemExit)
-        logger.debug(f"Client {CLIENT_ID}: Exception during chat consumer cleanup: {e}")
+        logger.debug(f"Exception during chat consumer cleanup: {e}")
         pass
 
-    print(f"Client {CLIENT_ID}: Shutdown complete.")
+    print("Shutdown complete.")
 
 
 class ChatConsumer:
@@ -538,12 +526,10 @@ class ChatConsumer:
                 host=self.redis_host, port=self.redis_port, db=0
             )
             await self.redis_conn.ping()
-            logger.info(
-                f"Client {self.client_id}: Connected to Redis at {self.redis_host}:{self.redis_port}"
-            )
+            logger.info(f"Connected to Redis at {self.redis_host}:{self.redis_port}")
             return True
         except Exception as e:
-            logger.error(f"Client {self.client_id}: Failed to connect to Redis: {e}")
+            logger.error(f"Failed to connect to Redis: {e}")
             return False
 
     async def setup_consumer_groups(self) -> bool:
@@ -555,16 +541,16 @@ class ChatConsumer:
                     self.personal_stream, self.consumer_group, "$", mkstream=True
                 )
                 logger.info(
-                    f"Client {self.client_id}: Created consumer group for personal stream: {self.personal_stream}"
+                    f"Created consumer group for personal stream: {self.personal_stream}"
                 )
             except Exception as e:
                 if "BUSYGROUP" in str(e):
                     logger.debug(
-                        f"Client {self.client_id}: Consumer group already exists for personal stream: {self.personal_stream}"
+                        f"Consumer group already exists for personal stream: {self.personal_stream}"
                     )
                 else:
                     logger.warning(
-                        f"Client {self.client_id}: Failed to create consumer group for personal stream: {e}"
+                        f"Failed to create consumer group for personal stream: {e}"
                     )
 
             # Create consumer group for global stream (starting from newest messages)
@@ -573,28 +559,93 @@ class ChatConsumer:
                     self.global_stream, self.consumer_group, "$", mkstream=True
                 )
                 logger.info(
-                    f"Client {self.client_id}: Created consumer group for global stream: {self.global_stream}"
+                    f"Created consumer group for global stream: {self.global_stream}"
                 )
             except Exception as e:
                 if "BUSYGROUP" in str(e):
                     logger.debug(
-                        f"Client {self.client_id}: Consumer group already exists for global stream: {self.global_stream}"
+                        f"Consumer group already exists for global stream: {self.global_stream}"
                     )
                 else:
                     logger.warning(
-                        f"Client {self.client_id}: Failed to create consumer group for global stream: {e}"
+                        f"Failed to create consumer group for global stream: {e}"
                     )
 
             return True
         except Exception as e:
-            logger.error(
-                f"Client {self.client_id}: Failed to setup consumer groups: {e}"
-            )
+            logger.error(f"Failed to setup consumer groups: {e}")
             return False
+
+    async def publish_response(
+        self, original_message_id: str, response: str, original_sender_id: str
+    ) -> bool:
+        """Publish a response message to the global Redis stream using unified schema."""
+        try:
+            # Generate unique message ID for this response
+            response_message_id = (
+                f"resp-{self.client_id}-{datetime.now(UTC).timestamp()}"
+            )
+
+            message_data = {
+                "type": "chat",
+                "message_id": response_message_id,
+                "client_id": self.client_id,
+                "message": response,
+                "target_id": "",  # Empty for broadcast response
+                "in_response_to_message_id": original_message_id,
+                "sender_role": "worker",
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+
+            message_id = await self.redis_conn.xadd(self.global_stream, message_data)
+            logger.info(
+                f"Published response to global stream with ID: {message_id.decode('utf-8')}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to publish response: {e}")
+            return False
+
+    async def generate_ai_response(self, message: str, sender_id: str) -> str | None:
+        """Generate an AI response using Mistral."""
+        if not MISTRAL_CLIENT:
+            logger.debug("Mistral client not available, skipping AI response")
+            return None
+
+        try:
+            # Create a context-aware prompt
+            system_prompt = (
+                f"You are a helpful AI assistant in a distributed system chat. "
+                f"Your client ID is {self.client_id}. "
+                f"You are responding to a message from client {sender_id}. "
+                f"Keep your responses concise, helpful, and conversational. "
+                f"If the message is a question, try to provide a useful answer. "
+                f"If it's a statement, acknowledge it appropriately."
+            )
+
+            # Generate response using Mistral
+            response = await asyncio.to_thread(
+                MISTRAL_CLIENT.chat.complete,
+                model="mistral-small-latest",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": message},
+                ],
+                max_tokens=150,
+                temperature=0.7,
+            )
+
+            ai_response = response.choices[0].message.content
+            logger.info(f"Response: {ai_response}")
+            return ai_response
+
+        except Exception as e:
+            logger.error(f"Error generating AI response: {e}")
+            return None
 
     async def consume_messages(self) -> None:
         """Main message consumption loop."""
-        logger.info(f"Client {self.client_id}: Starting chat message consumption")
+        logger.info("Starting chat message consumption")
         self.is_running = True
 
         while self.is_running and not manual_disconnect_initiated:
@@ -628,9 +679,7 @@ class ChatConsumer:
 
             except Exception as e:
                 if not manual_disconnect_initiated:
-                    logger.error(
-                        f"Client {self.client_id}: Error in chat message consumption loop: {e}"
-                    )
+                    logger.error(f"Error in chat message consumption loop: {e}")
                     await asyncio.sleep(5)  # Wait before retrying
                 else:
                     break
@@ -638,17 +687,33 @@ class ChatConsumer:
     async def process_message(
         self, stream_name: str, message_id: str, fields: dict[bytes, bytes]
     ) -> None:
-        """Process a received chat message - placeholder implementation."""
+        """Process a received chat message and generate AI responses."""
         try:
             # Decode fields from bytes to strings
             decoded_fields = {
                 k.decode("utf-8"): v.decode("utf-8") for k, v in fields.items()
             }
 
-            # Extract basic message data
+            # Extract basic message data using unified schema
             sender_id = decoded_fields.get("client_id", "unknown")
             message_text = decoded_fields.get("message", "")
             target_id = decoded_fields.get("target_id", "")
+            in_response_to_message_id = decoded_fields.get(
+                "in_response_to_message_id", ""
+            )
+
+            msg_message_id = decoded_fields.get(
+                "message_id", message_id
+            )  # Use Redis stream ID as fallback
+
+            # CRITICAL: Skip processing messages from this client to avoid infinite loops
+            if sender_id == self.client_id:
+                logger.debug("Skipping own message to avoid infinite loop")
+                return
+
+            # Note: We allow worker responses to be seen by other workers
+            # This enables workers to see each other's responses in the chat
+            # Individual workers will decide whether to respond based on should_respond logic later
 
             # Determine message type
             is_direct = bool(target_id and target_id != "")
@@ -656,45 +721,67 @@ class ChatConsumer:
             message_type = "📩 Direct" if is_direct else "📢 Broadcast"
             stream_type = "Personal" if is_personal else "Global"
 
-            # Simple logging for now - this is a placeholder for actual message processing
+            # Log the received message
             logger.info(
-                f"Client {self.client_id}: Processing {message_type} message from {sender_id}"
+                f"Received {message_type} message: {message_text} | Stream: {stream_type} | Message ID: {msg_message_id}"
             )
-            logger.info(f"  Content: {message_text}")
-            logger.info(f"  Stream: {stream_type} ({stream_name})")
 
-            # TODO: Add actual message processing logic here
-            # This could include:
-            # - Parsing commands or instructions
-            # - Updating client state
-            # - Triggering specific actions
-            # - Sending responses or acknowledgments
+            # Generate AI response if message is not empty and client has Mistral configured
+            if message_text.strip() and MISTRAL_CLIENT:
+                # Respond to broadcast messages or direct messages targeted at this client
+                # Can respond to responses from OTHER workers (enables worker-to-worker conversation)
+                should_respond = (
+                    not is_direct  # Respond to broadcast messages (including responses from other workers)
+                    or (
+                        is_direct and target_id == self.client_id
+                    )  # Respond to direct messages for this client
+                )
 
-            # Simulate some processing time (remove this in actual implementation)
-            await asyncio.sleep(0.1)
+                if should_respond:
+                    ai_response = await self.generate_ai_response(
+                        message_text, sender_id
+                    )
 
-            logger.debug(
-                f"Client {self.client_id}: Finished processing message {message_id}"
-            )
+                    if ai_response:
+                        # Publish the response to the global stream using the message ID
+                        success = await self.publish_response(
+                            msg_message_id, ai_response, sender_id
+                        )
+                        if not success:
+                            logger.warning("Failed to publish AI response")
+                    else:
+                        logger.info("No AI response generated")
+                else:
+                    if in_response_to_message_id:
+                        logger.debug(
+                            "Skipping response - message is already a response"
+                        )
+                    else:
+                        logger.debug(
+                            "Skipping response - direct message not targeted at this client"
+                        )
+            else:
+                if not message_text.strip():
+                    logger.debug("Skipping empty message")
+                elif not MISTRAL_CLIENT:
+                    logger.debug("Mistral not configured, skipping response")
+
+            logger.debug(f"Finished processing message {message_id}")
 
         except Exception as e:
-            logger.error(
-                f"Client {self.client_id}: Error processing message {message_id}: {e}"
-            )
+            logger.error(f"Error processing message {message_id}: {e}")
 
     async def stop(self) -> None:
         """Stop the consumer."""
-        logger.info(f"Client {self.client_id}: Stopping chat message consumption")
+        logger.info("Stopping chat message consumption")
         self.is_running = False
         if self.redis_conn:
             try:
                 await self.redis_conn.aclose()  # Use aclose() instead of deprecated close()
-                logger.info(f"Client {self.client_id}: Redis connection closed")
+                logger.info("Redis connection closed")
             except (Exception, SystemExit) as e:
                 # Ignore exceptions during cleanup, especially ClientInitiatedDisconnect (which inherits from SystemExit)
-                logger.debug(
-                    f"Client {self.client_id}: Exception during Redis cleanup: {e}"
-                )
+                logger.debug(f"Exception during Redis cleanup: {e}")
                 pass
 
 
@@ -703,10 +790,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(connect_and_send_updates())
     except KeyboardInterrupt:
-        logger.info(
-            f"Client {CLIENT_ID}: Keyboard interrupt received. Shutting down..."
-        )
+        logger.info("Keyboard interrupt received. Shutting down...")
     finally:
         # This ensures the flag is set if shutdown initiated by Ctrl+C
         manual_disconnect_initiated = True
-        logger.info(f"Client {CLIENT_ID}: Final cleanup.")
+        logger.info("Final cleanup.")

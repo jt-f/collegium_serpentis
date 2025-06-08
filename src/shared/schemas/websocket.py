@@ -40,12 +40,15 @@ class ControlMessage(WebSocketMessageBase):
 
 
 class ChatMessage(WebSocketMessageBase):
-    """Chat message sent by frontend clients."""
+    """Unified chat message schema for both original messages and responses."""
 
     type: Literal["chat"] = "chat"
+    message_id: str  # Unique identifier for this message
     client_id: str
     message: str
     target_id: str | None = None  # Optional target for direct messages
+    in_response_to_message_id: str | None = None  # ID of message this is responding to
+    sender_role: Literal["frontend", "worker"] = "frontend"
     timestamp: str | None = None
 
     def model_post_init(self, __context: dict[str, Any] | None = None) -> None:
