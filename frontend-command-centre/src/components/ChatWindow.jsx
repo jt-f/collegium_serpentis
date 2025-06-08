@@ -5,12 +5,35 @@ const ChatMessage = ({ message, clients = {} }) => {
   const isOwnMessage = message.isOwnMessage === true;
   const isPending = !message.acknowledged && !message.error && isOwnMessage;
   const hasError = message.error;
+  const isResponse = !!message.in_response_to_message_id;
+  const senderRole = message.sender_role || 'unknown';
 
-  // Get target client name for display
+  // Get target client name for display with fallback to "All"
   const getTargetDisplayName = (targetId) => {
-    if (!targetId) return null;
+    if (!targetId) return "All";
     const targetClient = clients[targetId];
     return targetClient?.client_name || targetClient?.client_id || targetId;
+  };
+
+  // Get sender display name for incoming messages
+  const getSenderDisplayName = (senderId) => {
+    const senderClient = clients[senderId];
+    return senderClient?.client_name || senderClient?.client_id || senderId;
+  };
+
+  // Determine target info for display
+  const targetDisplay = getTargetDisplayName(message.target_id);
+  const isBroadcast = !message.target_id || message.target_id === "";
+
+  // Get display icon based on sender role
+  const getSenderIcon = () => {
+    if (isOwnMessage) {
+      return <UserCircle size={20} className="flex-shrink-0 opacity-80" />;
+    } else if (senderRole === 'worker') {
+      return <Bot size={20} className="flex-shrink-0 text-sky-400" />;
+    } else {
+      return <UserCircle size={20} className="flex-shrink-0 text-purple-400" />;
+    }
   };
 
   return (
@@ -18,31 +41,53 @@ const ChatMessage = ({ message, clients = {} }) => {
       <div
         className={`p-3 rounded-lg max-w-[70%] flex items-start space-x-2 shadow transition-opacity duration-300 ${isOwnMessage
           ? `bg-purple-600 text-white rounded-br-none ${isPending ? 'opacity-50' : hasError ? 'bg-red-600' : ''}`
-          : 'bg-slate-700 text-slate-100 rounded-bl-none'
+          : senderRole === 'worker'
+            ? 'bg-slate-700 text-slate-100 rounded-bl-none border-l-2 border-sky-400'
+            : 'bg-slate-700 text-slate-100 rounded-bl-none border-l-2 border-purple-400'
           }`}
       >
-        {isOwnMessage ? (
-          <UserCircle size={20} className="flex-shrink-0 opacity-80" />
-        ) : (
-          <Bot size={20} className="flex-shrink-0 text-sky-400" />
-        )}
+        {getSenderIcon()}
         <div className="flex-1 min-w-0">
+          {/* Sender info for incoming messages */}
           {!isOwnMessage && (
-            <div className="text-xs text-sky-300 mb-1 font-medium">
-              {message.sender}
+            <div className="text-xs mb-1 font-medium flex items-center space-x-2">
+              <span className={senderRole === 'worker' ? 'text-sky-300' : 'text-purple-300'}>
+                {getSenderDisplayName(message.sender)}
+              </span>
+              <span className="text-slate-400 text-xs">
+                ({senderRole})
+              </span>
             </div>
           )}
-          {message.target_id && !isOwnMessage && (
-            <div className="text-xs text-yellow-300 mb-1 font-medium">
-              To: {getTargetDisplayName(message.target_id)}
+
+          {/* Response indicator */}
+          {isResponse && (
+            <div className="text-xs text-yellow-300 mb-1 italic">
+              ↳ Responding to message {message.in_response_to_message_id?.substring(0, 8)}...
             </div>
           )}
+
+          {/* Target info - show for all messages */}
+          <div className="text-xs mb-1 font-medium flex items-center space-x-1">
+            <span className={isOwnMessage ? "text-purple-200" : "text-slate-400"}>
+              To:
+            </span>
+            <span className={
+              isBroadcast
+                ? (isOwnMessage ? "text-purple-200" : "text-yellow-300")
+                : (isOwnMessage ? "text-purple-200" : "text-green-300")
+            }>
+              {targetDisplay}
+              {isBroadcast && (
+                <span className="ml-1 text-xs opacity-70">(Broadcast)</span>
+              )}
+            </span>
+          </div>
+
+          {/* Message content */}
           <p className="text-sm break-words">{message.text || message.message}</p>
-          {message.targetId && isOwnMessage && (
-            <div className="text-xs text-purple-300 mb-1">
-              To: {getTargetDisplayName(message.targetId)}
-            </div>
-          )}
+
+          {/* Timestamp and status info */}
           <div className="flex items-center mt-1 space-x-1">
             {isOwnMessage && isPending ? (
               <>
@@ -60,6 +105,11 @@ const ChatMessage = ({ message, clients = {} }) => {
                 <span className="text-xs opacity-60">
                   {new Date(message.timestamp).toLocaleTimeString()}
                 </span>
+                {message.message_id && (
+                  <span className="text-xs opacity-40 ml-2">
+                    ID: {message.message_id.substring(0, 8)}...
+                  </span>
+                )}
               </>
             ) : null}
           </div>
@@ -93,14 +143,17 @@ const ChatWindow = ({ messages = [], onSendMessage, wsStatus, isRegistered = fal
 
   // Get available targets for dropdown (only Python clients/workers)
   const getTargetOptions = () => {
-    const options = [{ id: 'all', name: 'All (Broadcast)' }];
+    const options = [{ id: 'all', name: 'All Workers (Broadcast)', shortName: 'All' }];
 
     Object.values(clients).forEach(client => {
       // Only include connected Python clients (workers), exclude other frontends
       if (client.connected === 'true' && client.client_role === 'worker') {
+        const displayName = client.client_name || client.client_id;
         options.push({
           id: client.client_id,
-          name: `${client.client_name || client.client_id} (Python Client)`
+          name: `${displayName}`,
+          shortName: displayName,
+          fullName: `${displayName} (${client.client_id})`
         });
       }
     });
@@ -110,6 +163,13 @@ const ChatWindow = ({ messages = [], onSendMessage, wsStatus, isRegistered = fal
 
   const targetOptions = getTargetOptions();
   const selectedTarget = targetOptions.find(option => option.id === selectedTargetId) || targetOptions[0];
+
+  // Get user-friendly target name for placeholders
+  const getTargetDisplayForPlaceholder = () => {
+    if (!selectedTargetId) return "all workers";
+    const target = targetOptions.find(option => option.id === selectedTargetId);
+    return target?.shortName || selectedTargetId;
+  };
 
   const isDisconnected = wsStatus !== 'connected';
   const isNotReady = isDisconnected || !isRegistered;
@@ -166,7 +226,7 @@ const ChatWindow = ({ messages = [], onSendMessage, wsStatus, isRegistered = fal
             placeholder={
               isDisconnected ? "WebSocket disconnected..." :
                 !isRegistered ? "Registering with server..." :
-                  selectedTargetId ? `Direct message to ${selectedTarget?.name}...` : "Type a message to all clients..."
+                  `Message to ${getTargetDisplayForPlaceholder()}...`
             }
             disabled={isNotReady}
             className={`flex-grow bg-slate-600 text-slate-100 placeholder-slate-400 p-3 rounded-md focus:ring-2 focus:ring-purple-500 focus:outline-none text-sm transition-opacity ${isNotReady ? 'opacity-50 cursor-not-allowed' : ''

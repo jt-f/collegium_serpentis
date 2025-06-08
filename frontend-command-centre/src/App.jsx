@@ -45,8 +45,8 @@ function App() {
         // If there's an existing WebSocket, close it first
         if (websocket.current) {
             if (websocket.current.readyState === WebSocket.OPEN) {
-            console.log("WebSocket already connected.");
-            return;
+                console.log("WebSocket already connected.");
+                return;
             }
             if (websocket.current.readyState === WebSocket.CONNECTING) {
                 console.log("WebSocket is already connecting, waiting...");
@@ -209,17 +209,21 @@ function App() {
                         )
                     );
                 } else if (message.type === 'chat') {
-                    console.log('Chat message received from another frontend:', message);
+                    console.log('Chat message received from another client:', message);
                     const newIncomingMessage = {
-                        id: `${message.client_id}-${message.timestamp}`, // Unique ID based on sender and timestamp
+                        id: message.message_id || `${message.client_id}-${message.timestamp}`, // Use message_id if available
+                        message_id: message.message_id,
                         sender: message.client_id,
-                        text: message.message, // Use 'text' to match own messages
+                        text: message.message, // Use 'text' to match local messages
+                        message: message.message, // Include both for compatibility
                         target_id: message.target_id, // Include target_id if present
+                        in_response_to_message_id: message.in_response_to_message_id, // Include threading info
+                        sender_role: message.sender_role || 'unknown',
                         timestamp: message.timestamp,
                         acknowledged: true, // Incoming messages are already "acknowledged" by nature
                         isOwnMessage: false // Flag to differentiate from own messages
                     };
-                    // Add incoming chat message from other frontend to chat messages
+                    // Add incoming chat message from other clients to chat messages
                     setChatMessages(prevMessages => [...prevMessages, newIncomingMessage]);
                 }
 
@@ -271,7 +275,7 @@ function App() {
 
             // Clear the WebSocket reference on error
             if (websocket.current === ws) {
-            websocket.current = null;
+                websocket.current = null;
                 console.log("Cleared WebSocket reference after error");
             }
         };
@@ -387,7 +391,7 @@ function App() {
     };
 
     // Chat Message Handler
-    const sendChatMessage = (messageText, targetId = null) => {
+    const sendChatMessage = (messageText, targetId = null, inResponseToMessageId = null) => {
         if (!messageText.trim()) return;
 
         const messageId = `chat-${Date.now()}-${generateRandomString(6)}`;
@@ -397,12 +401,16 @@ function App() {
         const newMessage = {
             id: messageId,
             tempId: messageId, // Temporary ID for matching with acknowledgment
+            message_id: messageId, // Include message_id for consistency
             sender: 'Operator',
             text: messageText.trim(),
+            message: messageText.trim(), // Include both for compatibility
             timestamp: timestamp,
             acknowledged: false,
             isOwnMessage: true,
-            targetId: targetId // Store target for display purposes
+            target_id: targetId, // Use target_id consistently
+            in_response_to_message_id: inResponseToMessageId, // Add threading support
+            sender_role: 'frontend'
         };
 
         setChatMessages(prevMessages => [...prevMessages, newMessage]);
@@ -432,13 +440,16 @@ function App() {
             wsStatus === 'connected';
 
         if (canSendNow) {
+            // Use unified chat message schema
             const chatMessage = {
                 type: "chat",
+                message_id: messageId,
                 client_id: frontendClientId.current,
                 message: messageText.trim(),
-                message_id: messageId,
-                timestamp: timestamp,
-                ...(targetId && { target_id: targetId }) // Include target_id only if specified
+                target_id: targetId || null, // Use null instead of undefined
+                in_response_to_message_id: inResponseToMessageId || null,
+                sender_role: "frontend",
+                timestamp: timestamp
             };
 
             try {
