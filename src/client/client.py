@@ -341,15 +341,16 @@ async def connect_and_send_updates():
                 send_status_update_periodically(websocket)
             )
 
-            # Gather all tasks (including chat consumer if running)
-            tasks_to_wait = [listener_task, periodic_sender_task]
-            if chat_consumer_task and not chat_consumer_task.done():
-                tasks_to_wait.append(chat_consumer_task)
+            # Only gather WebSocket-related tasks (chat consumer runs independently)
+            websocket_tasks = [listener_task, periodic_sender_task]
 
-            # Wait for any task to complete (or be cancelled)
-            task_results = await asyncio.gather(*tasks_to_wait, return_exceptions=True)
+            # Wait for any WebSocket task to complete (or be cancelled)
+            task_results = await asyncio.gather(
+                *websocket_tasks, return_exceptions=True
+            )
 
-            # Handle results/exceptions from tasks
+            # Handle results/exceptions from WebSocket tasks only
+            # Chat consumer continues independently of WebSocket connection status
             for task_result in task_results:
                 if isinstance(task_result, ClientInitiatedDisconnect):
                     logger.info(
@@ -362,30 +363,36 @@ async def connect_and_send_updates():
                     # This allows 4008 (duplicate client ID) to trigger ID regeneration
                     logger.info(
                         f"Client {CLIENT_ID}: "
-                        f"ConnectionClosed from task, re-raising for main handler."
+                        f"ConnectionClosed from WebSocket task, re-raising for main handler."
                     )
                     raise task_result
                 elif isinstance(task_result, BaseException):
                     exc = task_result
-                    # If any task (listener or sender) ends with any exception (including CancelledError from a task),
-                    # it usually means the session is not viable. Signal shutdown.
-                    if not isinstance(exc, asyncio.CancelledError) or (
-                        isinstance(exc, asyncio.CancelledError)
-                        and exc.__str__() != "Test sleep limit"
+                    # Handle different types of WebSocket task exceptions
+                    if isinstance(
+                        exc | (ConnectionClosed, ConnectionRefusedError, TimeoutError)
                     ):
-                        # Log actual errors, but treat task cancellations also as a signal to stop,
-                        # unless it's the specific "Test sleep limit" from the test fixture which is a controlled stop for some tests.
-                        logger.error(
+                        # Network-related errors: attempt to reconnect WebSocket
+                        logger.warning(
                             f"Client {CLIENT_ID}: "
-                            f"Exception in gathered task: {exc!r}. Signaling shutdown."
+                            f"Network error in WebSocket task: {exc!r}. Will attempt to reconnect."
+                        )
+                        # Don't set manual_disconnect_initiated, let it reconnect
+                    elif (
+                        isinstance(exc, asyncio.CancelledError)
+                        and exc.__str__() == "Test sleep limit"
+                    ):
+                        # Special test case handling
+                        logger.info(
+                            f"Client {CLIENT_ID}: WebSocket task cancelled: {exc!r}. Assuming part of controlled shutdown or test sequence."
                         )
                     else:
-                        logger.info(
-                            f"Client {CLIENT_ID}: Task cancelled: {exc!r}. Assuming part of controlled shutdown or test sequence."
+                        # Logic errors, validation errors, or other serious issues: shut down
+                        logger.error(
+                            f"Client {CLIENT_ID}: "
+                            f"Critical error in WebSocket task: {exc!r}. Signaling shutdown."
                         )
-                    manual_disconnect_initiated = (
-                        True  # Set flag for ANY exception/cancellation from tasks
-                    )
+                        manual_disconnect_initiated = True
 
             # If manual_disconnect_initiated is True, break the loop after cleanup
             if manual_disconnect_initiated:
@@ -598,12 +605,12 @@ class ChatConsumer:
                     self.global_stream: ">",  # Get new messages
                 }
 
-                # Use XREADGROUP to consume messages
+                # Use XREADGROUP to consume messages (one at a time for sequential processing)
                 messages = await self.redis_conn.xreadgroup(
                     self.consumer_group,
                     self.consumer_name,
                     streams,
-                    count=10,  # Read up to 10 messages at once
+                    count=1,  # Read only 1 message at a time to ensure sequential processing
                     block=1000,  # Block for 1 second if no messages
                 )
 
@@ -631,44 +638,44 @@ class ChatConsumer:
     async def process_message(
         self, stream_name: str, message_id: str, fields: dict[bytes, bytes]
     ) -> None:
-        """Process a received chat message."""
+        """Process a received chat message - placeholder implementation."""
         try:
             # Decode fields from bytes to strings
             decoded_fields = {
                 k.decode("utf-8"): v.decode("utf-8") for k, v in fields.items()
             }
 
-            # Extract message data
+            # Extract basic message data
             sender_id = decoded_fields.get("client_id", "unknown")
             message_text = decoded_fields.get("message", "")
             target_id = decoded_fields.get("target_id", "")
-            sender_role = decoded_fields.get("sender_role", "unknown")
-            timestamp = decoded_fields.get("timestamp", datetime.now().isoformat())
 
             # Determine message type
             is_direct = bool(target_id and target_id != "")
             is_personal = stream_name == self.personal_stream
-
-            # Format message for display
             message_type = "📩 Direct" if is_direct else "📢 Broadcast"
             stream_type = "Personal" if is_personal else "Global"
 
+            # Simple logging for now - this is a placeholder for actual message processing
             logger.info(
-                f"Client {self.client_id}: {message_type} message received on {stream_type} stream"
+                f"Client {self.client_id}: Processing {message_type} message from {sender_id}"
             )
-            logger.info(f"  From: {sender_id} ({sender_role})")
-            logger.info(f"  Message: {message_text}")
-            logger.info(f"  Time: {timestamp}")
-            logger.info(f"  Stream: {stream_name}")
-            logger.info(f"  Message ID: {message_id}")
-            if is_direct:
-                logger.info(f"  Target: {target_id}")
+            logger.info(f"  Content: {message_text}")
+            logger.info(f"  Stream: {stream_type} ({stream_name})")
 
-            # Here you can add business logic to handle the message
-            # For example:
-            # - Execute commands sent from the frontend
-            # - Update local state based on instructions
-            # - Send responses back via WebSocket or Redis
+            # TODO: Add actual message processing logic here
+            # This could include:
+            # - Parsing commands or instructions
+            # - Updating client state
+            # - Triggering specific actions
+            # - Sending responses or acknowledgments
+
+            # Simulate some processing time (remove this in actual implementation)
+            await asyncio.sleep(0.1)
+
+            logger.debug(
+                f"Client {self.client_id}: Finished processing message {message_id}"
+            )
 
         except Exception as e:
             logger.error(

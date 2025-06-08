@@ -45,8 +45,8 @@ function App() {
         // If there's an existing WebSocket, close it first
         if (websocket.current) {
             if (websocket.current.readyState === WebSocket.OPEN) {
-                console.log("WebSocket already connected.");
-                return;
+            console.log("WebSocket already connected.");
+            return;
             }
             if (websocket.current.readyState === WebSocket.CONNECTING) {
                 console.log("WebSocket is already connecting, waiting...");
@@ -271,7 +271,7 @@ function App() {
 
             // Clear the WebSocket reference on error
             if (websocket.current === ws) {
-                websocket.current = null;
+            websocket.current = null;
                 console.log("Cleared WebSocket reference after error");
             }
         };
