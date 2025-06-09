@@ -21,12 +21,8 @@ LOG_COLORS = {
     "CRITICAL": "red,bg_white",
 }
 
-# Format for console output
-CONSOLE_FORMAT = (
-    "%(log_color)s%(levelname)-8s%(reset)s | "
-    "%(name)s | "
-    "%(message_log_color)s%(message)s"
-)
+# Format for console output - include timestamp but let structlog handle level/name
+CONSOLE_FORMAT = "%(asctime)s | %(message_log_color)s%(message)s"
 
 
 def add_service_info(
@@ -53,12 +49,12 @@ def setup_logging() -> None:
 
     # Configure console handler
     if JSON_LOGS:
-        formatter = logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-        )
+        # For JSON logs, just pass through the structured message
+        formatter = logging.Formatter("%(message)s")
     else:
         formatter = colorlog.ColoredFormatter(
             CONSOLE_FORMAT,
+            datefmt="%Y-%m-%d %H:%M:%S",
             log_colors=LOG_COLORS,
             secondary_log_colors={"message": LOG_COLORS},
         )
@@ -85,8 +81,18 @@ def setup_logging() -> None:
         ]
     else:
         processors = shared_processors + [
-            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
-            structlog.dev.ConsoleRenderer(colors=True),
+            structlog.dev.ConsoleRenderer(
+                colors=True,
+                level_styles={
+                    "critical": "\033[41m",
+                    "exception": "\033[41m",
+                    "error": "\033[31m",
+                    "warn": "\033[33m",
+                    "warning": "\033[33m",
+                    "info": "\033[32m",
+                    "debug": "\033[36m",
+                },
+            ),
         ]
 
     structlog.configure(

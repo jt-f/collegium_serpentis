@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(poetry run black:*)",
+      "Bash(poetry run ruff check:*)",
+      "Bash(poetry run python:*)",
+      "Bash(poetry run pytest:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ],
+    "deny": []
+  }
+}

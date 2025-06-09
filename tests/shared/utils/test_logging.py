@@ -35,10 +35,9 @@ class TestLoggingConstants:
     def test_console_format_defined(self):
         """Test that CONSOLE_FORMAT is properly defined."""
         assert isinstance(CONSOLE_FORMAT, str)
-        assert "%(log_color)s" in CONSOLE_FORMAT
-        assert "%(levelname)" in CONSOLE_FORMAT
-        assert "%(name)s" in CONSOLE_FORMAT
-        assert "%(message)" in CONSOLE_FORMAT
+        assert "%(asctime)s" in CONSOLE_FORMAT
+        assert "%(message_log_color)s" in CONSOLE_FORMAT
+        assert "%(message)s" in CONSOLE_FORMAT
 
 
 class TestAddServiceInfo:
@@ -153,8 +152,7 @@ class TestSetupLogging:
         # Check that standard formatter is used for JSON
         formatter = handler.formatter
         assert isinstance(formatter, logging.Formatter)
-        assert "%(asctime)s" in formatter._fmt
-        assert "%(levelname)" in formatter._fmt
+        assert "%(message)s" in formatter._fmt
 
     @patch("src.shared.utils.logging.JSON_LOGS", False)
     @patch("src.shared.utils.logging.LOG_LEVEL", "WARNING")
@@ -204,7 +202,6 @@ class TestSetupLogging:
 
             # Check that console-specific processors are included
             processor_types = [type(p).__name__ for p in processors]
-            assert "TimeStamper" in processor_types
             assert "ConsoleRenderer" in processor_types
 
     def test_setup_logging_structlog_shared_processors(self):
@@ -478,10 +475,7 @@ class TestLoggingEdgeCases:
         """Test that CONSOLE_FORMAT contains all required format
         placeholders."""
         required_placeholders = [
-            "%(log_color)s",
-            "%(levelname)",
-            "%(reset)s",
-            "%(name)s",
+            "%(asctime)s",
             "%(message_log_color)s",
             "%(message)s",
         ]
