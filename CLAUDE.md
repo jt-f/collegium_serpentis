@@ -20,6 +20,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **ruff**: `./run_ruff.sh`
 You will need to run these manually before committing, and might need to go round in circles a few times, especially with black and ruff. If ruff says it can't fix it, you might need to investigate the code and fix it manually.
 
+### REMEMBER before committing:
+Always make sure there is nothing unstaged that needs to be added to the commit!! Double-check. 
+
 ### Frontend (React)
 - **Navigate to frontend**: `cd frontend-command-centre`
 - **Run dev server**: `npm run dev` or `./run_frontend.sh`
