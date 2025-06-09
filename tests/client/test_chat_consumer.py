@@ -154,14 +154,14 @@ class TestChatConsumerRedisSetup:
 
     async def test_setup_consumer_groups_resilient_behavior(self, chat_consumer):
         """Test consumer group setup resilient behavior with connection issues."""
-        # Don't connect to Redis, leave redis_conn as None
+        # Set redis_conn to None to simulate no connection
         chat_consumer.redis_conn = None
 
         result = await chat_consumer.setup_consumer_groups()
 
-        # The method is designed to be resilient and return True even with connection issues
-        # It logs warnings but continues to allow the client to function
-        assert result is True  # Method is resilient and returns True even with failures
+        # The method should return False when redis_conn is None
+        # This properly handles the case where Redis is not available
+        assert result is False
 
 
 class TestChatConsumerMessageProcessing:
