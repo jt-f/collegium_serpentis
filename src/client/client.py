@@ -165,7 +165,7 @@ async def listen_for_commands(websocket):
                 if command is None:
                     # If no command field but not an acknowledgment, log and ignore
                     if "result" not in message:
-                        print(f"Received non-command msg: {message}")
+                        logger.debug(f"Received non-command msg: {message}")
                     continue
 
                 logger.info(f"Received command: {command}")
@@ -285,7 +285,7 @@ async def connect_and_send_updates():
     global manual_disconnect_initiated, CLIENT_ID, CLIENT_NAME, is_paused
     delay = RECONNECT_DELAY  # Initial delay
 
-    print(
+    logger.info(
         f"connect_and_send_updates() called. manual_disconnect_initiated={manual_disconnect_initiated}"
     )
 
@@ -294,17 +294,17 @@ async def connect_and_send_updates():
     chat_consumer_task = None
 
     while not manual_disconnect_initiated:
-        print(
+        logger.info(
             f"Entering main loop iteration. manual_disconnect_initiated={manual_disconnect_initiated}"
         )
         websocket = None  # Initialize websocket to None
         listener_task = None
         periodic_sender_task = None
         try:
-            print(f"About to call websockets.connect({SERVER_URL})")
+            logger.info(f"About to call websockets.connect({SERVER_URL})")
             logger.info(f"Attempting to connect to {SERVER_URL}...")
             websocket = await websockets.connect(SERVER_URL)
-            print("websockets.connect() succeeded")
+            logger.info("websockets.connect() succeeded")
             logger.info("Connected to server.")
             delay = RECONNECT_DELAY  # Reset delay on successful connection
 
@@ -367,7 +367,7 @@ async def connect_and_send_updates():
                     exc = task_result
                     # Handle different types of WebSocket task exceptions
                     if isinstance(
-                        exc | (ConnectionClosed, ConnectionRefusedError, TimeoutError)
+                        exc, ConnectionClosed | ConnectionRefusedError | TimeoutError
                     ):
                         # Network-related errors: attempt to reconnect WebSocket
                         logger.warning(
@@ -516,7 +516,8 @@ class ChatConsumer:
         # Stream keys
         self.personal_stream = f"chat_stream:{client_id}"
         self.global_stream = "chat_global"
-        self.consumer_group = "workers"
+        # Use unique consumer group per client for broadcast messages to ensure all clients receive them
+        self.consumer_group = f"broadcast-{client_id}"
         self.consumer_name = f"worker-{client_id}"
 
     async def connect(self) -> bool:
@@ -579,7 +580,7 @@ class ChatConsumer:
     async def publish_response(
         self, original_message_id: str, response: str, original_sender_id: str
     ) -> bool:
-        """Publish a response message to the global Redis stream using unified schema."""
+        """Publish a response message targeting the original sender using unified schema."""
         try:
             # Generate unique message ID for this response
             response_message_id = (
@@ -591,7 +592,7 @@ class ChatConsumer:
                 "message_id": response_message_id,
                 "client_id": self.client_id,
                 "message": response,
-                "target_id": "",  # Empty for broadcast response
+                "target_id": original_sender_id,  # Target the original sender specifically
                 "in_response_to_message_id": original_message_id,
                 "sender_role": "worker",
                 "timestamp": datetime.now(UTC).isoformat(),
@@ -599,7 +600,7 @@ class ChatConsumer:
 
             message_id = await self.redis_conn.xadd(self.global_stream, message_data)
             logger.info(
-                f"Published response to global stream with ID: {message_id.decode('utf-8')}"
+                f"Published targeted response to {original_sender_id} with ID: {message_id.decode('utf-8')}"
             )
             return True
         except Exception as e:
@@ -698,9 +699,7 @@ class ChatConsumer:
             sender_id = decoded_fields.get("client_id", "unknown")
             message_text = decoded_fields.get("message", "")
             target_id = decoded_fields.get("target_id", "")
-            in_response_to_message_id = decoded_fields.get(
-                "in_response_to_message_id", ""
-            )
+            decoded_fields.get("in_response_to_message_id", "")
 
             msg_message_id = decoded_fields.get(
                 "message_id", message_id
@@ -728,14 +727,13 @@ class ChatConsumer:
 
             # Generate AI response if message is not empty and client has Mistral configured
             if message_text.strip() and MISTRAL_CLIENT:
-                # Respond to broadcast messages or direct messages targeted at this client
-                # Can respond to responses from OTHER workers (enables worker-to-worker conversation)
-                should_respond = (
-                    not is_direct  # Respond to broadcast messages (including responses from other workers)
-                    or (
-                        is_direct and target_id == self.client_id
-                    )  # Respond to direct messages for this client
-                )
+                # Respond to:
+                # 1. Direct messages targeted at this client
+                # 2. Broadcast messages (but responses will be targeted back to original sender)
+                # Note: Don't respond to responses from other workers to avoid infinite chains
+                should_respond = not is_direct or (  # Respond to broadcast messages
+                    is_direct and target_id == self.client_id
+                )  # Respond to direct messages for this client
 
                 if should_respond:
                     ai_response = await self.generate_ai_response(
@@ -743,7 +741,7 @@ class ChatConsumer:
                     )
 
                     if ai_response:
-                        # Publish the response to the global stream using the message ID
+                        # Publish the response targeted back to the original sender
                         success = await self.publish_response(
                             msg_message_id, ai_response, sender_id
                         )
@@ -752,14 +750,9 @@ class ChatConsumer:
                     else:
                         logger.info("No AI response generated")
                 else:
-                    if in_response_to_message_id:
-                        logger.debug(
-                            "Skipping response - message is already a response"
-                        )
-                    else:
-                        logger.debug(
-                            "Skipping response - direct message not targeted at this client"
-                        )
+                    logger.debug(
+                        "Skipping response - direct message not targeted at this client"
+                    )
             else:
                 if not message_text.strip():
                     logger.debug("Skipping empty message")

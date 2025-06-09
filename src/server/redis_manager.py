@@ -602,16 +602,15 @@ class RedisManager:
     async def ensure_chat_consumer_groups(self) -> bool:
         """Ensure consumer groups exist for chat streams.
 
+        Note: Individual clients now create their own unique consumer groups
+        for broadcast messages, so no pre-creation is needed here.
+
         Returns:
             True if all groups were created/verified successfully
         """
-        success = True
-
-        # Create consumer group for global broadcast stream
-        if not await self.create_consumer_group(CHAT_GLOBAL_STREAM, "workers", "$"):
-            success = False
-
-        return success
+        # Each client creates its own consumer group (broadcast-{client_id})
+        # so no server-side pre-creation is needed
+        return True
 
     async def get_stream_length(self, stream_key: str) -> int:
         """Get the length of a Redis stream.
