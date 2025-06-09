@@ -3,7 +3,7 @@ import json
 import os
 import random
 import uuid
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 
 import redis.asyncio as redis_async
 import websockets
@@ -70,7 +70,7 @@ RECONNECT_DELAY = 5  # seconds
 def get_current_status_payload() -> dict:
     """Generates the current status payload (CPU, memory, etc.)."""
     return {
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "cpu_usage": round(random.uniform(0.0, 100.0), 2),
         "memory_usage": round(random.uniform(0.0, 100.0), 2),
     }
@@ -86,7 +86,7 @@ async def send_registration_message(websocket):
             "client_type": CLIENT_TYPE,
             "client_name": CLIENT_NAME,
             "client_state": "initializing",
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     }
     await websocket.send(json.dumps(registration_payload))
@@ -204,7 +204,7 @@ async def listen_for_commands(websocket):
                     ack_status = {
                         "client_state": "disconnecting",
                         "acknowledged_command": "disconnect",
-                        "timestamp": datetime.now(UTC).isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     await send_status_message(websocket, ack_status)
                     # No longer raise ClientInitiatedDisconnect here; let flag handle it.
@@ -553,6 +553,7 @@ class ChatConsumer:
                     logger.warning(
                         f"Failed to create consumer group for personal stream: {e}"
                     )
+                    return False # Should return False on other errors
 
             # Create consumer group for global stream (starting from newest messages)
             try:
@@ -571,9 +572,10 @@ class ChatConsumer:
                     logger.warning(
                         f"Failed to create consumer group for global stream: {e}"
                     )
+                    return False # Should return False on other errors
 
             return True
-        except Exception as e:
+        except Exception as e: # This catches broader exceptions like ConnectionError
             logger.error(f"Failed to setup consumer groups: {e}")
             return False
 
@@ -584,7 +586,7 @@ class ChatConsumer:
         try:
             # Generate unique message ID for this response
             response_message_id = (
-                f"resp-{self.client_id}-{datetime.now(UTC).timestamp()}"
+                f"resp-{self.client_id}-{datetime.now(timezone.utc).timestamp()}"
             )
 
             message_data = {
@@ -595,7 +597,7 @@ class ChatConsumer:
                 "target_id": original_sender_id,  # Target the original sender specifically
                 "in_response_to_message_id": original_message_id,
                 "sender_role": "worker",
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
             message_id = await self.redis_conn.xadd(self.global_stream, message_data)

@@ -1160,3 +1160,4 @@ class TestMainExecution:
 
         # # Test passes if no unhandled exception occurs and __main__ block handles it
         # assert True
+
