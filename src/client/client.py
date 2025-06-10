@@ -45,8 +45,14 @@ fake = Faker()
 
 # --- Tracking Variables ---
 CLIENT_START_TIME = datetime.now(UTC)  # Track client start time for uptime calculation
-MESSAGES_SENT_COUNT = 0  # Track number of messages sent
-MESSAGES_RECEIVED_COUNT = 0  # Track number of messages received
+MESSAGES_SENT_COUNT = (
+    0  # Track number of messages sent (legacy - includes all message types)
+)
+MESSAGES_RECEIVED_COUNT = (
+    0  # Track number of messages received (legacy - includes all message types)
+)
+CHAT_MESSAGES_SENT_COUNT = 0  # Track number of chat messages sent specifically
+CHAT_MESSAGES_RECEIVED_COUNT = 0  # Track number of chat messages received specifically
 # --- End Tracking Variables ---
 
 
@@ -92,8 +98,8 @@ def get_current_status_payload() -> dict:
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "uptime": calculate_uptime(),
-        "messages_sent": MESSAGES_SENT_COUNT,
-        "messages_received": MESSAGES_RECEIVED_COUNT,
+        "messages_sent": CHAT_MESSAGES_SENT_COUNT,  # Only count chat messages
+        "messages_received": CHAT_MESSAGES_RECEIVED_COUNT,  # Only count chat messages
     }
 
 
@@ -609,7 +615,7 @@ class ChatConsumer:
         self, original_message_id: str, response: str, original_sender_id: str
     ) -> bool:
         """Publish a response message targeting the original sender using unified schema."""
-        global MESSAGES_SENT_COUNT
+        global MESSAGES_SENT_COUNT, CHAT_MESSAGES_SENT_COUNT
         try:
             # Generate unique message ID for this response
             response_message_id = (
@@ -628,7 +634,8 @@ class ChatConsumer:
             }
 
             message_id = await self.redis_conn.xadd(self.global_stream, message_data)
-            MESSAGES_SENT_COUNT += 1  # Increment sent message counter
+            MESSAGES_SENT_COUNT += 1  # Increment sent message counter (legacy)
+            CHAT_MESSAGES_SENT_COUNT += 1  # Increment chat message counter
             logger.info(
                 f"Published targeted response to {original_sender_id} with ID: {message_id.decode('utf-8')}"
             )
@@ -719,7 +726,7 @@ class ChatConsumer:
         self, stream_name: str, message_id: str, fields: dict[bytes, bytes]
     ) -> None:
         """Process a received chat message and generate AI responses."""
-        global MESSAGES_RECEIVED_COUNT
+        global MESSAGES_RECEIVED_COUNT, CHAT_MESSAGES_RECEIVED_COUNT
         try:
             # Decode fields from bytes to strings
             decoded_fields = {
@@ -741,7 +748,8 @@ class ChatConsumer:
                 logger.debug("Skipping own message to avoid infinite loop")
                 return
 
-            MESSAGES_RECEIVED_COUNT += 1  # Increment received message counter
+            MESSAGES_RECEIVED_COUNT += 1  # Increment received message counter (legacy)
+            CHAT_MESSAGES_RECEIVED_COUNT += 1  # Increment chat message counter
 
             # Note: We allow worker responses to be seen by other workers
             # This enables workers to see each other's responses in the chat
