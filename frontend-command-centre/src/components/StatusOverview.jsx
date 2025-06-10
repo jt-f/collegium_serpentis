@@ -1,5 +1,5 @@
 import React from 'react';
-import { Zap, ShieldAlert, ShieldOff, AlertTriangle, Wifi, Cpu, MemoryStick, HardDrive, Loader2 } from 'lucide-react';
+import { Zap, ShieldAlert, ShieldOff, AlertTriangle, Wifi, Clock, MessageSquare, MessageCircle, Loader2 } from 'lucide-react';
 
 const StatusCard = ({ title, value, icon, colorClass = 'bg-slate-700', valueColor = 'text-sky-400' }) => (
     <div className={`p-4 rounded-lg shadow-md flex items-center space-x-3 ${colorClass}`}>
@@ -19,6 +19,49 @@ const getStatusIcon = (status) => {
         case 'inactive': return <ShieldOff size={20} className="text-slate-500" />;
         case 'error': return <ShieldAlert size={20} className="text-red-500" />;
         default: return <AlertTriangle size={20} className="text-amber-500" />;
+    }
+};
+
+const formatAverageUptime = (onlineClients) => {
+    if (onlineClients.length === 0) return 'N/A';
+
+    // Parse uptime strings and convert to seconds for averaging
+    let totalSeconds = 0;
+    let validUptimes = 0;
+
+    onlineClients.forEach(client => {
+        const uptimeStr = client.uptime;
+        if (uptimeStr && uptimeStr !== 'N/A') {
+            // Parse uptime string like "1h 23m 45s" or "23m 45s" or "45s"
+            const hours = uptimeStr.match(/(\d+)h/);
+            const minutes = uptimeStr.match(/(\d+)m/);
+            const seconds = uptimeStr.match(/(\d+)s/);
+
+            let clientSeconds = 0;
+            if (hours) clientSeconds += parseInt(hours[1]) * 3600;
+            if (minutes) clientSeconds += parseInt(minutes[1]) * 60;
+            if (seconds) clientSeconds += parseInt(seconds[1]);
+
+            if (clientSeconds > 0) {
+                totalSeconds += clientSeconds;
+                validUptimes++;
+            }
+        }
+    });
+
+    if (validUptimes === 0) return 'N/A';
+
+    const avgSeconds = Math.floor(totalSeconds / validUptimes);
+    const hours = Math.floor(avgSeconds / 3600);
+    const minutes = Math.floor((avgSeconds % 3600) / 60);
+    const remainingSeconds = avgSeconds % 60;
+
+    if (hours > 0) {
+        return `${hours}h ${minutes}m`;
+    } else if (minutes > 0) {
+        return `${minutes}m ${remainingSeconds}s`;
+    } else {
+        return `${remainingSeconds}s`;
     }
 };
 
@@ -52,14 +95,14 @@ const StatusOverview = ({ clients: clientsObj, isLoading, error, redisStatus, ws
 
     const onlineClients = clientList.filter(c => c.connected === 'true' && c.client_state === 'running');
 
-    let avgCpu = 'N/A';
-    let avgMemory = 'N/A';
-    let avgDisk = 'N/A';
+    let avgUptime = 'N/A';
+    let totalMessagesSent = 0;
+    let totalMessagesReceived = 0;
 
     if (onlineClients.length > 0) {
-        avgCpu = `${(onlineClients.reduce((acc, c) => acc + (parseFloat(c.cpu_usage) || 0), 0) / onlineClients.length).toFixed(0)}%`;
-        avgMemory = `${(onlineClients.reduce((acc, c) => acc + (parseFloat(c.memory_usage) || 0), 0) / onlineClients.length).toFixed(0)}%`;
-        avgDisk = `${(onlineClients.reduce((acc, c) => acc + (parseFloat(c.disk_usage) || 0), 0) / onlineClients.length).toFixed(0)}%`;
+        avgUptime = formatAverageUptime(onlineClients);
+        totalMessagesSent = onlineClients.reduce((acc, c) => acc + (parseInt(c.messages_sent) || 0), 0);
+        totalMessagesReceived = onlineClients.reduce((acc, c) => acc + (parseInt(c.messages_received) || 0), 0);
     }
 
     return (
@@ -83,9 +126,9 @@ const StatusOverview = ({ clients: clientsObj, isLoading, error, redisStatus, ws
                 <StatusCard title="Disconnected" value={disconnectedClients} icon={getStatusIcon('inactive')} valueColor='text-slate-500' />
                 <StatusCard title="Paused" value={pausedClients} icon={<AlertTriangle size={20} className="text-amber-500" />} valueColor='text-amber-400' />
 
-                <StatusCard title="Avg. CPU (Running)" value={avgCpu} icon={<Cpu size={24} className="text-teal-400" />} valueColor='text-teal-400' />
-                <StatusCard title="Avg. Memory (Running)" value={avgMemory} icon={<MemoryStick size={24} className="text-orange-400" />} valueColor='text-orange-400' />
-                <StatusCard title="Avg. Disk (Running)" value={avgDisk} icon={<HardDrive size={24} className="text-indigo-400" />} valueColor='text-indigo-400' />
+                <StatusCard title="Avg. Uptime (Running)" value={avgUptime} icon={<Clock size={24} className="text-teal-400" />} valueColor='text-teal-400' />
+                <StatusCard title="Total Messages Sent" value={totalMessagesSent} icon={<MessageSquare size={24} className="text-orange-400" />} valueColor='text-orange-400' />
+                <StatusCard title="Total Messages Received" value={totalMessagesReceived} icon={<MessageCircle size={24} className="text-indigo-400" />} valueColor='text-indigo-400' />
             </div>
         </div>
     );

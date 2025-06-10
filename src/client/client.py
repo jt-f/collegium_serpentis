@@ -1,9 +1,8 @@
 import asyncio
 import json
 import os
-import random
 import uuid
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 
 import redis.asyncio as redis_async
 import websockets
@@ -44,6 +43,12 @@ else:
 # Initialize Faker instance
 fake = Faker()
 
+# --- Tracking Variables ---
+CLIENT_START_TIME = datetime.now(UTC)  # Track client start time for uptime calculation
+MESSAGES_SENT_COUNT = 0  # Track number of messages sent
+MESSAGES_RECEIVED_COUNT = 0  # Track number of messages received
+# --- End Tracking Variables ---
+
 
 # Function to generate a random name using Faker
 def generate_realistic_name() -> str:
@@ -67,17 +72,34 @@ STATUS_INTERVAL = 10  # seconds
 RECONNECT_DELAY = 5  # seconds
 
 
+def calculate_uptime() -> str:
+    """Calculate uptime since client started."""
+    uptime_delta = datetime.now(UTC) - CLIENT_START_TIME
+    total_seconds = int(uptime_delta.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+
+
 def get_current_status_payload() -> dict:
-    """Generates the current status payload (CPU, memory, etc.)."""
+    """Generates the current status payload with new metrics (uptime, messages sent/received)."""
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "cpu_usage": round(random.uniform(0.0, 100.0), 2),
-        "memory_usage": round(random.uniform(0.0, 100.0), 2),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "uptime": calculate_uptime(),
+        "messages_sent": MESSAGES_SENT_COUNT,
+        "messages_received": MESSAGES_RECEIVED_COUNT,
     }
 
 
 async def send_registration_message(websocket):
     """Sends the initial registration message to the server."""
+    global MESSAGES_SENT_COUNT
     registration_payload = {
         "type": "register",
         "client_id": CLIENT_ID,
@@ -86,14 +108,16 @@ async def send_registration_message(websocket):
             "client_type": CLIENT_TYPE,
             "client_name": CLIENT_NAME,
             "client_state": "initializing",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         },
     }
     await websocket.send(json.dumps(registration_payload))
+    MESSAGES_SENT_COUNT += 1  # Increment sent message counter
     logger.info(f"Sent registration message: {registration_payload}")
 
 
 async def send_status_message(websocket, status_attributes: dict):
+    global MESSAGES_SENT_COUNT
     # Allow sending disconnect acknowledgment even if manual_disconnect_initiated is true
     is_disconnect_ack = status_attributes.get("acknowledged_command") == "disconnect"
     if manual_disconnect_initiated and not is_disconnect_ack:
@@ -104,6 +128,7 @@ async def send_status_message(websocket, status_attributes: dict):
         "status": status_attributes,
     }
     await websocket.send(json.dumps(message))
+    MESSAGES_SENT_COUNT += 1  # Increment sent message counter
 
     # Log status updates with minimal info
     if status_attributes.get("acknowledged_command"):
@@ -131,13 +156,14 @@ async def send_full_status_update(websocket):
 
 async def listen_for_commands(websocket):
     """Listens for commands from the server and updates the client's state."""
-    global is_paused, manual_disconnect_initiated
+    global is_paused, manual_disconnect_initiated, MESSAGES_RECEIVED_COUNT
     try:
         async for message_json in websocket:
             if manual_disconnect_initiated:
                 break  # Exit loop if disconnect initiated elsewhere
             try:
                 message = json.loads(message_json)
+                MESSAGES_RECEIVED_COUNT += 1  # Increment received message counter
 
                 # Check if this is a server acknowledgment message (not a command)
                 if (
@@ -204,7 +230,7 @@ async def listen_for_commands(websocket):
                     ack_status = {
                         "client_state": "disconnecting",
                         "acknowledged_command": "disconnect",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                     }
                     await send_status_message(websocket, ack_status)
                     # No longer raise ClientInitiatedDisconnect here; let flag handle it.
@@ -553,7 +579,7 @@ class ChatConsumer:
                     logger.warning(
                         f"Failed to create consumer group for personal stream: {e}"
                     )
-                    return False # Should return False on other errors
+                    return False  # Should return False on other errors
 
             # Create consumer group for global stream (starting from newest messages)
             try:
@@ -572,10 +598,10 @@ class ChatConsumer:
                     logger.warning(
                         f"Failed to create consumer group for global stream: {e}"
                     )
-                    return False # Should return False on other errors
+                    return False  # Should return False on other errors
 
             return True
-        except Exception as e: # This catches broader exceptions like ConnectionError
+        except Exception as e:  # This catches broader exceptions like ConnectionError
             logger.error(f"Failed to setup consumer groups: {e}")
             return False
 
@@ -583,10 +609,11 @@ class ChatConsumer:
         self, original_message_id: str, response: str, original_sender_id: str
     ) -> bool:
         """Publish a response message targeting the original sender using unified schema."""
+        global MESSAGES_SENT_COUNT
         try:
             # Generate unique message ID for this response
             response_message_id = (
-                f"resp-{self.client_id}-{datetime.now(timezone.utc).timestamp()}"
+                f"resp-{self.client_id}-{datetime.now(UTC).timestamp()}"
             )
 
             message_data = {
@@ -597,10 +624,11 @@ class ChatConsumer:
                 "target_id": original_sender_id,  # Target the original sender specifically
                 "in_response_to_message_id": original_message_id,
                 "sender_role": "worker",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
 
             message_id = await self.redis_conn.xadd(self.global_stream, message_data)
+            MESSAGES_SENT_COUNT += 1  # Increment sent message counter
             logger.info(
                 f"Published targeted response to {original_sender_id} with ID: {message_id.decode('utf-8')}"
             )
@@ -691,6 +719,7 @@ class ChatConsumer:
         self, stream_name: str, message_id: str, fields: dict[bytes, bytes]
     ) -> None:
         """Process a received chat message and generate AI responses."""
+        global MESSAGES_RECEIVED_COUNT
         try:
             # Decode fields from bytes to strings
             decoded_fields = {
@@ -711,6 +740,8 @@ class ChatConsumer:
             if sender_id == self.client_id:
                 logger.debug("Skipping own message to avoid infinite loop")
                 return
+
+            MESSAGES_RECEIVED_COUNT += 1  # Increment received message counter
 
             # Note: We allow worker responses to be seen by other workers
             # This enables workers to see each other's responses in the chat
