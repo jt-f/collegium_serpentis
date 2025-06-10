@@ -45,14 +45,8 @@ fake = Faker()
 
 # --- Tracking Variables ---
 CLIENT_START_TIME = datetime.now(UTC)  # Track client start time for uptime calculation
-MESSAGES_SENT_COUNT = (
-    0  # Track number of messages sent (legacy - includes all message types)
-)
-MESSAGES_RECEIVED_COUNT = (
-    0  # Track number of messages received (legacy - includes all message types)
-)
-CHAT_MESSAGES_SENT_COUNT = 0  # Track number of chat messages sent specifically
-CHAT_MESSAGES_RECEIVED_COUNT = 0  # Track number of chat messages received specifically
+CHAT_MESSAGES_SENT_COUNT = 0  # Track number of chat messages sent
+CHAT_MESSAGES_RECEIVED_COUNT = 0  # Track number of chat messages received
 # --- End Tracking Variables ---
 
 
@@ -94,18 +88,17 @@ def calculate_uptime() -> str:
 
 
 def get_current_status_payload() -> dict:
-    """Generates the current status payload with new metrics (uptime, messages sent/received)."""
+    """Generates the current status payload with chat message metrics (uptime, messages sent/received)."""
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "uptime": calculate_uptime(),
-        "messages_sent": CHAT_MESSAGES_SENT_COUNT,  # Only count chat messages
-        "messages_received": CHAT_MESSAGES_RECEIVED_COUNT,  # Only count chat messages
+        "messages_sent": CHAT_MESSAGES_SENT_COUNT,
+        "messages_received": CHAT_MESSAGES_RECEIVED_COUNT,
     }
 
 
 async def send_registration_message(websocket):
     """Sends the initial registration message to the server."""
-    global MESSAGES_SENT_COUNT
     registration_payload = {
         "type": "register",
         "client_id": CLIENT_ID,
@@ -118,12 +111,10 @@ async def send_registration_message(websocket):
         },
     }
     await websocket.send(json.dumps(registration_payload))
-    MESSAGES_SENT_COUNT += 1  # Increment sent message counter
     logger.info(f"Sent registration message: {registration_payload}")
 
 
 async def send_status_message(websocket, status_attributes: dict):
-    global MESSAGES_SENT_COUNT
     # Allow sending disconnect acknowledgment even if manual_disconnect_initiated is true
     is_disconnect_ack = status_attributes.get("acknowledged_command") == "disconnect"
     if manual_disconnect_initiated and not is_disconnect_ack:
@@ -134,7 +125,6 @@ async def send_status_message(websocket, status_attributes: dict):
         "status": status_attributes,
     }
     await websocket.send(json.dumps(message))
-    MESSAGES_SENT_COUNT += 1  # Increment sent message counter
 
     # Log status updates with minimal info
     if status_attributes.get("acknowledged_command"):
@@ -169,7 +159,6 @@ async def listen_for_commands(websocket):
                 break  # Exit loop if disconnect initiated elsewhere
             try:
                 message = json.loads(message_json)
-                MESSAGES_RECEIVED_COUNT += 1  # Increment received message counter
 
                 # Check if this is a server acknowledgment message (not a command)
                 if (
@@ -615,7 +604,7 @@ class ChatConsumer:
         self, original_message_id: str, response: str, original_sender_id: str
     ) -> bool:
         """Publish a response message targeting the original sender using unified schema."""
-        global MESSAGES_SENT_COUNT, CHAT_MESSAGES_SENT_COUNT
+        global CHAT_MESSAGES_SENT_COUNT
         try:
             # Generate unique message ID for this response
             response_message_id = (
@@ -634,7 +623,6 @@ class ChatConsumer:
             }
 
             message_id = await self.redis_conn.xadd(self.global_stream, message_data)
-            MESSAGES_SENT_COUNT += 1  # Increment sent message counter (legacy)
             CHAT_MESSAGES_SENT_COUNT += 1  # Increment chat message counter
             logger.info(
                 f"Published targeted response to {original_sender_id} with ID: {message_id.decode('utf-8')}"
@@ -726,7 +714,7 @@ class ChatConsumer:
         self, stream_name: str, message_id: str, fields: dict[bytes, bytes]
     ) -> None:
         """Process a received chat message and generate AI responses."""
-        global MESSAGES_RECEIVED_COUNT, CHAT_MESSAGES_RECEIVED_COUNT
+        global CHAT_MESSAGES_RECEIVED_COUNT
         try:
             # Decode fields from bytes to strings
             decoded_fields = {
@@ -748,7 +736,6 @@ class ChatConsumer:
                 logger.debug("Skipping own message to avoid infinite loop")
                 return
 
-            MESSAGES_RECEIVED_COUNT += 1  # Increment received message counter (legacy)
             CHAT_MESSAGES_RECEIVED_COUNT += 1  # Increment chat message counter
 
             # Note: We allow worker responses to be seen by other workers
