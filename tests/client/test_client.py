@@ -96,10 +96,14 @@ class TestClientUtilityFunctions:
         """Test status payload generation."""
         status = client.get_current_status_payload()
         assert "timestamp" in status
-        assert "cpu_usage" in status
-        assert "memory_usage" in status
-        assert 0 <= status["cpu_usage"] <= 100
-        assert 0 <= status["memory_usage"] <= 100
+        assert "uptime" in status
+        assert "messages_sent" in status
+        assert "messages_received" in status
+        assert isinstance(status["uptime"], str)
+        assert isinstance(status["messages_sent"], int)
+        assert isinstance(status["messages_received"], int)
+        assert status["messages_sent"] >= 0
+        assert status["messages_received"] >= 0
         # Verify timestamp is in ISO format
         assert isinstance(status["timestamp"], str)
         try:
@@ -109,16 +113,15 @@ class TestClientUtilityFunctions:
 
     def test_get_current_status_payload_values(self):
         """Test that status payload values are within expected ranges."""
-        for _ in range(10):  # Test multiple times due to random values
+        for _ in range(10):  # Test multiple times to ensure consistency
             status = client.get_current_status_payload()
-            assert isinstance(status["cpu_usage"], float)
-            assert isinstance(status["memory_usage"], float)
-            assert 0 <= status["cpu_usage"] <= 100
-            assert 0 <= status["memory_usage"] <= 100
-            assert (
-                len(str(status["cpu_usage"]).split(".")[-1]) <= 2
-            )  # Max 2 decimal places
-            assert len(str(status["memory_usage"]).split(".")[-1]) <= 2
+            assert isinstance(status["uptime"], str)
+            assert isinstance(status["messages_sent"], int)
+            assert isinstance(status["messages_received"], int)
+            assert status["messages_sent"] >= 0
+            assert status["messages_received"] >= 0
+            # Verify uptime format (should contain 's' for seconds)
+            assert "s" in status["uptime"]
 
     def test_client_initiated_disconnect_exception(self):
         """Test ClientInitiatedDisconnect exception class."""
@@ -148,8 +151,9 @@ class TestClientUtilityFunctions:
         # Override specific values for predictable testing
         status_payload = {
             **status_payload_base,
-            "cpu_usage": 50,
-            "memory_usage": 30,
+            "uptime": "5m 30s",
+            "messages_sent": 50,
+            "messages_received": 30,
         }
 
         await client.send_status_message(mock_ws, status_payload)
@@ -164,8 +168,9 @@ class TestClientUtilityFunctions:
         # Check for timestamp within the "status" dictionary
         assert "timestamp" in sent_data["status"]
         # Verify specific overridden values
-        assert sent_data["status"]["cpu_usage"] == 50
-        assert sent_data["status"]["memory_usage"] == 30
+        assert sent_data["status"]["uptime"] == "5m 30s"
+        assert sent_data["status"]["messages_sent"] == 50
+        assert sent_data["status"]["messages_received"] == 30
 
     @pytest.mark.asyncio
     async def test_send_status_message_when_manual_disconnect_initiated(self):
@@ -175,7 +180,7 @@ class TestClientUtilityFunctions:
             client.manual_disconnect_initiated = True
             mock_ws = AsyncMock()
 
-            status = {"cpu_usage": 50, "memory_usage": 30}
+            status = {"uptime": "10m 15s", "messages_sent": 50, "messages_received": 30}
             await client.send_status_message(mock_ws, status)
 
             # Should not send when manual_disconnect_initiated is True
@@ -280,8 +285,9 @@ class TestClientMessageHandling:
         # Override specific values for predictable testing
         status_payload = {
             **status_payload_base,
-            "cpu_usage": 50,
-            "memory_usage": 30,
+            "uptime": "5m 30s",
+            "messages_sent": 50,
+            "messages_received": 30,
         }
 
         await client.send_status_message(mock_ws, status_payload)
@@ -296,8 +302,9 @@ class TestClientMessageHandling:
         # Check for timestamp within the "status" dictionary
         assert "timestamp" in sent_data["status"]
         # Verify specific overridden values
-        assert sent_data["status"]["cpu_usage"] == 50
-        assert sent_data["status"]["memory_usage"] == 30
+        assert sent_data["status"]["uptime"] == "5m 30s"
+        assert sent_data["status"]["messages_sent"] == 50
+        assert sent_data["status"]["messages_received"] == 30
 
 
 class TestCommandListener:
@@ -1160,4 +1167,3 @@ class TestMainExecution:
 
         # # Test passes if no unhandled exception occurs and __main__ block handles it
         # assert True
-

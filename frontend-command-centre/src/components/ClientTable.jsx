@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronUp, Smartphone, HardDrive, Cpu, MemoryStick, Wifi, AlertCircle, CheckCircle2, XCircle, PowerOff, Play, Pause, X, Mail } from 'lucide-react';
+import { ChevronDown, ChevronUp, Smartphone, Clock, MessageSquare, MessageCircle, Wifi, AlertCircle, CheckCircle2, XCircle, PowerOff, Play, Pause, X, Mail } from 'lucide-react';
 
 const getStatusClasses = (clientData) => {
   if (clientData.connected !== 'true') {
@@ -145,24 +145,24 @@ const ClientRow = ({ client, onClientAction, onSelectForMessage }) => {
           <td colSpan={7} className="p-0">
             <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-700/30">
               <div className="flex items-center space-x-2 p-3 bg-slate-800 rounded-md">
-                <Cpu size={20} className="text-teal-400" />
+                <Clock size={20} className="text-teal-400" />
                 <div>
-                  <p className="text-xs text-slate-400">CPU Usage</p>
-                  <p className="text-sm font-semibold text-teal-300">{client.cpu_usage || 'N/A'}</p>
+                  <p className="text-xs text-slate-400">Uptime</p>
+                  <p className="text-sm font-semibold text-teal-300">{client.uptime || 'N/A'}</p>
                 </div>
               </div>
               <div className="flex items-center space-x-2 p-3 bg-slate-800 rounded-md">
-                <MemoryStick size={20} className="text-orange-400" />
+                <MessageSquare size={20} className="text-orange-400" />
                 <div>
-                  <p className="text-xs text-slate-400">Memory</p>
-                  <p className="text-sm font-semibold text-orange-300">{client.memory_usage || 'N/A'}</p>
+                  <p className="text-xs text-slate-400">Messages Sent</p>
+                  <p className="text-sm font-semibold text-orange-300">{client.messages_sent || 'N/A'}</p>
                 </div>
               </div>
               <div className="flex items-center space-x-2 p-3 bg-slate-800 rounded-md">
-                <HardDrive size={20} className="text-indigo-400" />
+                <MessageCircle size={20} className="text-indigo-400" />
                 <div>
-                  <p className="text-xs text-slate-400">Disk Space</p>
-                  <p className="text-sm font-semibold text-indigo-300">{client.disk_usage || 'N/A'}</p>
+                  <p className="text-xs text-slate-400">Messages Received</p>
+                  <p className="text-sm font-semibold text-indigo-300">{client.messages_received || 'N/A'}</p>
                 </div>
               </div>
             </div>

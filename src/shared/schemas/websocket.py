@@ -168,8 +168,9 @@ class ClientStatus(BaseModel):
     last_heartbeat_timestamp: str | None = None
     status_detail: str | None = None
     timestamp: str | None = None
-    cpu_usage: float | None = None
-    memory_usage: float | None = None
+    uptime: str | None = None
+    messages_sent: int | None = None
+    messages_received: int | None = None
     redis_status: Literal["connected", "unavailable", "unknown"] | None = None
     attributes: dict[str, Any] | None = None
     hostname: str | None = None
