@@ -534,7 +534,7 @@ class ConnectionManager:
         while True:
             try:
                 data = await websocket.receive_text()
-                logger.info(f"Received data: {data}")
+                logger.debug(f"Received data: {{data}}")
                 message = json.loads(data)
             except WebSocketDisconnect as e:
                 logger.info(f"Client {client_id} disconnected during message loop: {e}")
@@ -1494,6 +1494,7 @@ class ConnectionManager:
             msg_message_id = decoded_fields.get("message_id", message_id)
             timestamp = decoded_fields.get("timestamp", datetime.now(UTC).isoformat())
 
+            logger.info(f"Forwarding chat message from worker {{sender_id}} via stream {{stream_name}}: {{message_text[:100]}}{{'...' if len(message_text) > 100 else ''}}")
             # Only process messages from worker clients (responses)
             if sender_role != "worker":
                 logger.debug(f"Skipping non-worker message from {sender_id}")
